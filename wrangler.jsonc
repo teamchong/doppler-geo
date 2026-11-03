@@ -3,5 +3,8 @@
   "main": "worker/index.js",
   "compatibility_date": "2026-10-01",
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
-  "routes": [{ "pattern": "doppler.teamchong.net", "custom_domain": true }]
+  "durable_objects": {
+    "bindings": [{ "name": "LIVE_TRACKER", "class_name": "LiveTrackerDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LiveTrackerDO"] }]
 }

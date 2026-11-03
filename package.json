@@ -1,7 +1,25 @@
 {
   "name": "doppler-geo",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Locate where and when an audio or video recording was made from the acoustic Doppler shift of overhead propeller aircraft matched against ADS-B flight history.",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/teamchong/doppler-geo.git"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "sh -c '[ -f .env ] && . ./.env; exec npx wrangler deploy ${CF_DOMAIN:+--domain \"$CF_DOMAIN\"} \"$@\"' --",
+    "test": "node test/detector.mjs && node test/e2e.mjs && node test/batch.mjs",
+    "test:detector": "node test/detector.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:batch": "node test/batch.mjs",
+    "update:types": "node scripts/prop-types.mjs",
+    "update:example": "node scripts/build-example.mjs test/fixtures/kampina-slice.json public/examples/2025-07-18",
+    "update:data": "node scripts/prop-types.mjs && node scripts/build-example.mjs test/fixtures/kampina-slice.json public/examples/2025-07-18",
+    "index:day": "node scripts/build-index.mjs"
+  },
   "devDependencies": {
     "cf": "1.0.0-beta.27",
     "wrangler": "^4.156.2"

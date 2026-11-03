@@ -78,23 +78,27 @@ function whiten({ F, B, L }) {
 // Best continuous ridge through the whole spectrogram.
 function viterbi(Z, F, B, J = 4, lam = 0.3) {
   const back = new Int16Array(F * B);
-  let prev = Z.slice(0, B), cur = new Float32Array(B);
+  let prev = new Float32Array(B), cur = new Float32Array(B);
+  for (let b = 0; b < B; b++) prev[b] = Z[b];
   for (let f = 1; f < F; f++) {
+    const row = f * B;
     for (let b = 0; b < B; b++) {
       let best = -Infinity, arg = b;
-      for (let d = -J; d <= J; d++) {
+      const dmin = b < J ? -b : -J, dmax = b + J >= B ? B - 1 - b : J;
+      for (let d = dmin; d <= dmax; d++) {
         const p = b + d;
-        if (p < 0 || p >= B) continue;
-        const v = prev[p] - lam * Math.abs(d);
-        if (v > best) [best, arg] = [v, p];
+        const v = prev[p] - (d < 0 ? -d : d) * lam;
+        if (v > best) { best = v; arg = p; }
       }
-      cur[b] = best + Z[f * B + b];
-      back[f * B + b] = arg;
+      cur[b] = best + Z[row + b];
+      back[row + b] = arg;
     }
     [prev, cur] = [cur, prev];
   }
   const path = new Int32Array(F);
-  path[F - 1] = prev.indexOf(Math.max(...prev));
+  let bestEnd = 0;
+  for (let b = 1; b < B; b++) if (prev[b] > prev[bestEnd]) bestEnd = b;
+  path[F - 1] = bestEnd;
   for (let f = F - 1; f > 0; f--) path[f - 1] = back[f * B + path[f]];
   return path;
 }
@@ -126,7 +130,7 @@ function segments(Z, path, F, B) {
 function mask(Z, B, b0, path, a, b, ks) {
   for (let f = a; f <= b; f++)
     for (const k of ks) {
-      const c = Math.round((b0 + path[f]) * k) - b0, w = Math.ceil(4 * k);
+      const c = Math.round((b0 + path[f]) * k) - b0, w = Math.max(4, Math.ceil(4 * k));
       for (let j = Math.max(0, c - w); j <= Math.min(B - 1, c + w); j++) Z[f * B + j] = -4;
     }
 }
@@ -153,11 +157,21 @@ function fitPasses(ts, fq) {
       const ix = [];
       for (let i = 0; i < n; i++) if (Math.abs(ts[i] - ts[c]) <= W) ix.push(i);
       if (ix.length < 24) continue;
-      const t = ix.map((i) => ts[i]), f = ix.map((i) => fq[i]), fit = fitLine(t, f), t1 = t[0], t2 = t[t.length - 1];
-      if (fit.rmsRel < 0.012 && fit.v >= 15 && fit.d < 15000 && fit.tc > t1 + 1.5 && fit.tc < t2 - 1.5 && Math.abs(fit.tc - ts[c]) < 6) best = { fit, t, f };
+      const t = ix.map((i) => ts[i]), f = ix.map((i) => fq[i]), t1 = t[0], t2 = t[t.length - 1];
+      if (t2 - t1 < 18 || ix.length / ((t2 - t1) * 4 + 1) < 0.5) continue;
+      if (W > 15 && Math.min(ts[c] - t1, t2 - ts[c]) < 4) break;
+      const fit = fitLine(t, f);
+      if (fit.rmsRel < 0.012 && fit.v >= 15 && fit.d >= 90 && fit.d < 15000 && fit.d <= (t2 - t1) * fit.v * 1.2 && fit.tc > t1 + 4 && fit.tc < t2 - 4 && Math.abs(fit.tc - ts[c]) < 6 && (!best || fit.rmsRel <= best.fit.rmsRel * (fit.v < 22 ? 2.5 : 1.5))) best = { fit, t, f };
       else if (best) break;
     }
-    if (best && !out.some((e) => Math.abs(e.fit.tc - best.fit.tc) < 10)) out.push(best);
+    if (!best) continue;
+    const bSpan = best.t[best.t.length - 1] - best.t[0];
+    const pi = out.findIndex((e) => Math.abs(e.fit.tc - best.fit.tc) < 8);
+    if (pi < 0) out.push(best);
+    else {
+      const pSpan = out[pi].t[out[pi].t.length - 1] - out[pi].t[0];
+      if (bSpan > pSpan + 1 || (Math.abs(bSpan - pSpan) <= 1 && best.fit.rmsRel < out[pi].fit.rmsRel)) out[pi] = best;
+    }
   }
   return out;
 }
@@ -169,8 +183,8 @@ export function analyze(x, fs = FS) {
   const S = spectrogram(x, fs), { F, B, b0, df, dt, t0 } = S;
   const base = { F, B, b0, df, dt, t0, dur: x.length / fs, events: [] };
   if (F < 40) return { ...base, img: new Uint8ClampedArray(0) };
-  const Z = whiten(S);
-  const img = Uint8ClampedArray.from(Z, (z) => ((z + 1) / 8) * 255);
+  const Z = whiten(S), img = new Uint8ClampedArray(Z.length);
+  for (let i = 0; i < Z.length; i++) img[i] = ((Z[i] + 4) / 8) * 255;
   const fr = (t) => Math.round((t - t0) / dt);
   for (let iter = 0; iter < 8 && base.events.length < 6; iter++) {
     const path = viterbi(Z, F, B);
@@ -190,13 +204,17 @@ export function analyze(x, fs = FS) {
         const t1 = t[0], t2 = t[t.length - 1], curve = [];
         for (let u = t1; u <= t2; u += 0.5) curve.push([u, fit.f0 * lineK(u, fit.v, fit.d, fit.tc)]);
         base.events.push({ ...fit, seg: [t1, t2], pts: pick(t.map((u, i) => [u, f[i]]), 120), curve });
-        mask(Z, B, b0, path, Math.max(0, fr(t1) - 8), Math.min(F - 1, fr(t2) + 8), [1 / 3, 1 / 2, 2, 3]);
+        mask(Z, B, b0, path, Math.max(0, fr(t1) - 8), Math.min(F - 1, fr(t2) + 8), [1 / 3, 1 / 2, 2 / 3, 3 / 2, 2, 3]);
       }
     }
   }
   // Slower than any light plane flies = a bad fit. Within 10 s = the same plane fitted twice; keep the widest fit, a short window fits anything.
   const ev = base.events.filter((e) => e.v >= 22);
-  base.events = ev.filter((e) => !ev.some((o) => o !== e && Math.abs(o.tc - e.tc) < 10 && o.seg[1] - o.seg[0] > e.seg[1] - e.seg[0]));
+  base.events = ev.filter((e) => !ev.some((o) => {
+    if (o === e || (Math.abs(o.tc - e.tc) >= 8 && Math.min(o.seg[1], e.seg[1]) - Math.max(o.seg[0], e.seg[0]) <= 18)) return false;
+    const os = o.seg[1] - o.seg[0], es = e.seg[1] - e.seg[0];
+    return os > es + 1 || (Math.abs(os - es) <= 1 && o.rmsRel < e.rmsRel);
+  }));
   base.events.sort((p, q) => p.tc - q.tc);
   return { ...base, img };
 }

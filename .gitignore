@@ -4,3 +4,7 @@ dl/
 .wrangler/
 .cloudflare/
 HANDOFF.md
+.env
+.env.*
+.dev.vars
+.dev.vars.*

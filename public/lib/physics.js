@@ -76,7 +76,15 @@ export function buildTrack(meta, rows, fr) {
       v[3 * i + 1] = (p[3 * b + 1] - p[3 * a + 1]) / dt;
     }
     let st = 0, sz = 0, stt = 0, stz = 0, m = 0;
-    for (let j = 0; j < n; j++) if (Math.abs(t[j] - t[i]) <= W) [st, sz, stt, stz, m] = [st + t[j], sz + z[j], stt + t[j] ** 2, stz + t[j] * z[j], m + 1];
+    for (let j = 0; j < n; j++)
+      if (Math.abs(t[j] - t[i]) <= W) {
+        const d = t[j] - t[i];
+        st += d;
+        sz += z[j];
+        stt += d * d;
+        stz += d * z[j];
+        m++;
+      }
     const den = m * stt - st * st;
     p[3 * i + 2] = z[i];
     v[3 * i + 2] = vr ?? (m > 1 && den > 0 ? (m * stz - st * sz) / den : 0);
@@ -94,7 +102,7 @@ export const last = { R: 0 };
 
 // Doppler factor heard at tObs: solve tObs = tEmit + |r(tEmit) - obs| / C, use radial velocity at tEmit.
 export function retardedK(trk, ox, oy, oz, t) {
-  let te = t - 3000 / C;
+  let te = Math.max(trk.t0, Math.min(trk.t1, t - 3000 / C));
   for (let i = 0; i < 8; i++) {
     const s = trk.state(te);
     if (!s) return NaN;
@@ -118,71 +126,102 @@ export function lineK(t, v, d, tc) {
 }
 
 export function nelderMead(f, x0, step, iters = 300) {
-  const n = x0.length;
-  let pts = [x0.slice()];
+  const n = x0.length, m = n + 1;
+  const pts = [x0.slice()];
   for (let i = 0; i < n; i++) {
     const p = x0.slice();
     p[i] += step[i];
     pts.push(p);
   }
-  let vals = pts.map(f);
+  const vals = Float64Array.from(pts, f), cen = new Float64Array(n), xr = new Float64Array(n), xe = new Float64Array(n), xc = new Float64Array(n);
   for (let it = 0; it < iters; it++) {
-    const ord = vals.map((v, i) => i).sort((a, b) => vals[a] - vals[b]);
-    pts = ord.map((i) => pts[i]);
-    vals = ord.map((i) => vals[i]);
+    for (let i = 1; i < m; i++) {
+      const v = vals[i], p = pts[i];
+      let j = i - 1;
+      while (j >= 0 && vals[j] > v) {
+        vals[j + 1] = vals[j];
+        pts[j + 1] = pts[j];
+        j--;
+      }
+      vals[j + 1] = v;
+      pts[j + 1] = p;
+    }
     if (Math.abs(vals[n] - vals[0]) <= 1e-12 * (Math.abs(vals[0]) + 1e-12)) break;
-    const cen = new Array(n).fill(0);
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) cen[j] += pts[i][j] / n;
-    const at = (k) => cen.map((c, j) => c + k * (pts[n][j] - c));
-    const xr = at(-1), fr = f(xr);
+    cen.fill(0);
+    for (let i = 0; i < n; i++) {
+      const pi = pts[i];
+      for (let j = 0; j < n; j++) cen[j] += pi[j] / n;
+    }
+    const pn = pts[n];
+    for (let j = 0; j < n; j++) xr[j] = cen[j] - (pn[j] - cen[j]);
+    const fr = f(xr);
     if (fr < vals[0]) {
-      const xe = at(-2), fe = f(xe);
-      [pts[n], vals[n]] = fe < fr ? [xe, fe] : [xr, fr];
+      for (let j = 0; j < n; j++) xe[j] = cen[j] - 2 * (pn[j] - cen[j]);
+      const fe = f(xe), src = fe < fr ? xe : xr;
+      for (let j = 0; j < n; j++) pn[j] = src[j];
+      vals[n] = fe < fr ? fe : fr;
     } else if (fr < vals[n - 1]) {
-      [pts[n], vals[n]] = [xr, fr];
+      for (let j = 0; j < n; j++) pn[j] = xr[j];
+      vals[n] = fr;
     } else {
-      const xc = at(fr < vals[n] ? -0.5 : 0.5), fc = f(xc);
-      if (fc < Math.min(fr, vals[n])) [pts[n], vals[n]] = [xc, fc];
-      else {
+      const k = fr < vals[n] ? -0.5 : 0.5;
+      for (let j = 0; j < n; j++) xc[j] = cen[j] + k * (pn[j] - cen[j]);
+      const fc = f(xc);
+      if (fc < Math.min(fr, vals[n])) {
+        for (let j = 0; j < n; j++) pn[j] = xc[j];
+        vals[n] = fc;
+      } else {
+        const p0 = pts[0];
         for (let i = 1; i <= n; i++) {
-          pts[i] = pts[i].map((x, j) => pts[0][j] + 0.5 * (x - pts[0][j]));
-          vals[i] = f(pts[i]);
+          const pi = pts[i];
+          for (let j = 0; j < n; j++) pi[j] = p0[j] + 0.5 * (pi[j] - p0[j]);
+          vals[i] = f(pi);
         }
       }
     }
   }
-  const b = vals.indexOf(Math.min(...vals));
+  let b = 0;
+  for (let i = 1; i <= n; i++) if (vals[i] < vals[b]) b = i;
   return { x: pts[b], f: vals[b] };
 }
-
-// Fit (f0, v, d, tc) of a straight pass to a traced curve. f0 is solved by least squares inside the cost.
-export function fitLine(ts, fs) {
-  const n = ts.length, k = new Float64Array(n);
-  const cost = ([v, ld, tc]) => {
+ 
+ // Fit (f0, v, d, tc) of a straight pass to a traced curve. f0 is solved by least squares inside the cost.
+ export function fitLine(ts, fs) {
+   const n = ts.length, k = new Float64Array(n);
+  const cost = (p) => {
+    const v = p[0], ld = p[1], tc = p[2];
     if (!(v > 8 && v < 170 && ld > 3.5 && ld < 10)) return 1e18;
-    const d = Math.exp(ld);
+    const d = Math.exp(ld), doverC = d / C, c2 = C * C, v2 = v * v, a = c2 - v2, ad2 = a * d * d;
     let sfk = 0, skk = 0;
     for (let i = 0; i < n; i++) {
-      k[i] = lineK(ts[i], v, d, tc);
-      sfk += fs[i] * k[i];
-      skk += k[i] * k[i];
+      const T = ts[i] - tc + doverC;
+      const u = (c2 * T - Math.sqrt(c2 * T * T * v2 + ad2)) / a;
+      const R = C * (T - u);
+      const ki = C / (C + (v2 * u) / R);
+      k[i] = ki;
+      sfk += fs[i] * ki;
+      skk += ki * ki;
     }
     const f0 = sfk / skk;
+    if (!(f0 > 40 && f0 < 450)) return 1e18;
     let e = 0;
-    for (let i = 0; i < n; i++) e += (fs[i] - f0 * k[i]) ** 2;
-    return e / n;
-  };
-  // tc guess: steepest descent of a 2 s regression slope
-  let tc0 = ts[n >> 1], minSlope = Infinity;
-  for (let i = 0; i < n; i++) {
-    let sx = 0, sy = 0, sxx = 0, sxy = 0, m = 0;
-    for (let j = i; j >= 0 && ts[i] - ts[j] <= 2; j--) [sx, sy, sxx, sxy, m] = [sx + ts[j], sy + fs[j], sxx + ts[j] ** 2, sxy + ts[j] * fs[j], m + 1];
-    for (let j = i + 1; j < n && ts[j] - ts[i] <= 2; j++) [sx, sy, sxx, sxy, m] = [sx + ts[j], sy + fs[j], sxx + ts[j] ** 2, sxy + ts[j] * fs[j], m + 1];
-    const den = m * sxx - sx * sx;
-    if (m < 3 || den <= 0) continue;
-    const slope = (m * sxy - sx * sy) / den;
-    if (slope < minSlope) [minSlope, tc0] = [slope, ts[i]];
-  }
+     for (let i = 0; i < n; i++) {
+       const df = fs[i] - f0 * k[i];
+       e += df * df;
+     }
+     return e / n;
+   };
+   // tc guess: steepest descent of a 2 s regression slope
+   let tc0 = ts[n >> 1], minSlope = Infinity;
+   for (let i = 0; i < n; i++) {
+     let sx = 0, sy = 0, sxx = 0, sxy = 0, m = 0;
+     for (let j = i; j >= 0 && ts[i] - ts[j] <= 2; j--) { sx += ts[j]; sy += fs[j]; sxx += ts[j] * ts[j]; sxy += ts[j] * fs[j]; m++; }
+     for (let j = i + 1; j < n && ts[j] - ts[i] <= 2; j++) { sx += ts[j]; sy += fs[j]; sxx += ts[j] * ts[j]; sxy += ts[j] * fs[j]; m++; }
+     const den = m * sxx - sx * sx;
+     if (m < 3 || den <= 0) continue;
+     const slope = (m * sxy - sx * sy) / den;
+     if (slope < minSlope) [minSlope, tc0] = [slope, ts[i]];
+   }
   const q = Math.max(1, Math.floor(n * 0.15));
   const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
   const r = mean(fs.slice(0, q)) / mean(fs.slice(n - q));

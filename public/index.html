@@ -2,125 +2,828 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Where was this recorded? Aircraft Doppler geolocation</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>doppler-geo: Acoustic Doppler Aircraft Geolocation</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --mute: #666; --line: #ddd; --acc: #d9480f; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --line: #333; } }
+  :root {
+    color-scheme: dark;
+    --bg: #070b12;
+    --bg-grid: rgba(56, 189, 248, 0.035);
+    --surface: #0d131f;
+    --surface-2: #121a2a;
+    --surface-3: #172236;
+    --fg: #e6edf7;
+    --mute: #8b9bb4;
+    --dim: #576782;
+    --line: #1e2b42;
+    --line-hi: #2d4263;
+    --acc: #38bdf8;
+    --acc-glow: rgba(56, 189, 248, 0.14);
+    --amber: #f59e0b;
+    --amber-glow: rgba(245, 158, 11, 0.14);
+    --ok: #22c55e;
+    --ok-glow: rgba(34, 197, 94, 0.14);
+    --danger: #f43f5e;
+    --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  p.sub { color: var(--mute); margin: 0 0 16px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
-  h2 { font-size: 16px; margin: 0 0 8px; }
-  .go { padding: 8px 14px; border: 1px solid var(--line); background: none; color: inherit; border-radius: 6px; cursor: pointer; font: inherit; }
-  .go { border-color: var(--acc); color: var(--acc); }
-  .go:disabled { opacity: .5; cursor: default; }
-  .panel { border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 6px 0; }
-  label { color: var(--mute); }
-  input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: none; color: inherit; }
-  #map { height: 420px; margin-bottom: 12px; border-radius: 8px; border: 1px solid var(--line); }
-  #preview { width: 100%; max-height: 240px; background: #000; border-radius: 6px; }
-  .range { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; margin: 8px 0; }
-  .range .t { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-  .range .t input { width: 4.5em; border: 0; border-radius: 0; text-align: center; font-variant-numeric: tabular-nums; }
-  .range .t button { border: 0; border-left: 1px solid var(--line); background: none; color: var(--acc); font: inherit; font-size: 13px; padding: 0 8px; cursor: pointer; }
-  #spec { width: 100%; height: 180px; image-rendering: pixelated; background: #000; border-radius: 6px; }
-  #busy { display: flex; align-items: center; gap: 8px; height: 18px; color: var(--mute); font-size: 13px; margin: 8px 0 0; visibility: hidden; }
-  #busy.on { visibility: visible; }
-  .spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--acc); border-radius: 50%; animation: spin .8s linear infinite; }
+  body {
+    margin: 0;
+    font: 14px/1.5 var(--sans);
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(circle at 15% 0%, rgba(56, 189, 248, 0.08), transparent 40%),
+      radial-gradient(circle at 85% 0%, rgba(245, 158, 11, 0.05), transparent 40%),
+      linear-gradient(var(--bg-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 28px 28px, 28px 28px;
+    color: var(--fg);
+    min-height: 100vh;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 20px 56px; }
+
+  /* Hero Story Header */
+  .top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+    padding-bottom: 16px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font: 600 11px/1 var(--mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--acc);
+    margin-bottom: 8px;
+  }
+  .pulse-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 8px var(--ok);
+  }
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+    color: #fff;
+  }
+  p.sub {
+    color: var(--mute);
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.55;
+    max-width: 780px;
+  }
+  .top-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .gh-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border: 1px solid var(--line-hi);
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: #fff;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+  .gh-link:hover {
+    border-color: var(--acc);
+    background: var(--surface-3);
+    box-shadow: 0 0 16px var(--acc-glow);
+  }
+  .gh-link svg { width: 16px; height: 16px; fill: currentColor; }
+  .privacy-note {
+    font: 500 11.5px/1.3 var(--mono);
+    color: var(--mute);
+    text-align: right;
+  }
+
+  /* 3-Step Story Strip */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .pipe-step {
+    background: rgba(13, 19, 31, 0.85);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .pipe-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .step-num {
+    font: 600 11px/1 var(--mono);
+    color: var(--acc);
+    background: var(--acc-glow);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+  .pipe-desc {
+    font-size: 12.5px;
+    color: var(--mute);
+    line-height: 1.45;
+  }
+
+  /* Step 1: Source Selector Grid (Single Active Focus) */
+  .source-section {
+    margin-bottom: 16px;
+  }
+  .section-eyebrow {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .section-eyebrow h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--fg);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .source-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+  .source-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  }
+  .source-card:hover {
+    border-color: var(--line-hi);
+  }
+  .source-card.active-source {
+    background: var(--surface-2);
+    border-color: var(--acc);
+    box-shadow: 0 4px 20px rgba(56, 189, 248, 0.1);
+  }
+  .source-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .tag {
+    font: 600 10.5px/1.2 var(--mono);
+    padding: 3px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--line-hi);
+    color: var(--amber);
+    background: var(--amber-glow);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .tag.real {
+    border-color: rgba(56, 189, 248, 0.35);
+    color: var(--acc);
+    background: var(--acc-glow);
+  }
+  .ex-meta {
+    font: 500 11px/1.2 var(--mono);
+    color: var(--dim);
+  }
+  .source-card h3 {
+    font-size: 14.5px;
+    margin: 0;
+    color: #fff;
+    line-height: 1.3;
+  }
+  .source-card p.desc {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--mute);
+    line-height: 1.45;
+  }
+  .source-detail {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+  .source-card.active-source .source-detail {
+    display: flex;
+  }
+  .source-card audio {
+    width: 100%;
+    height: 34px;
+    filter: invert(0.92) hue-rotate(180deg) contrast(1.05);
+  }
+
+  /* Workbench Container: Status Banner + Spectrogram + Map */
+  .workbench-wrap {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    margin-bottom: 14px;
+  }
+  .status-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+    min-height: 42px;
+  }
+  #status {
+    margin: 0;
+    font: 500 13px/1.35 var(--mono);
+    color: var(--fg);
+  }
+  #busy {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    color: var(--acc);
+    font: 500 12px/1 var(--mono);
+  }
+  #busy.on { display: inline-flex; }
+  .spin {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--line-hi);
+    border-top-color: var(--acc);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #status { min-height: 1.4em; margin: 8px 0; }
+
+  .workbench {
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    align-items: stretch;
+  }
+  .spec-panel {
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+  }
+  .map-wrap {
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    background: rgba(18, 26, 42, 0.65);
+    border-bottom: 1px solid var(--line);
+    font: 600 11.5px/1.2 var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--mute);
+  }
+  .panel-bar strong { color: var(--fg); }
+  .legend-pills {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 11px/1 var(--mono);
+    text-transform: none;
+    letter-spacing: 0;
+    flex-wrap: wrap;
+  }
+  .leg { display: inline-flex; align-items: center; gap: 4px; color: var(--mute); white-space: nowrap; }
+  .leg-swatch { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+
+  /* Map */
+  #map {
+    height: 360px;
+    width: 100%;
+    flex: 1;
+    background: #060a10;
+  }
+  #map.radar-tiles .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) brightness(0.86) contrast(1.12) saturate(0.75);
+  }
+  .leaflet-container { font-family: var(--sans); background: #060a10; }
+  .leaflet-control-attribution {
+    background: rgba(7, 11, 18, 0.8) !important;
+    color: var(--mute) !important;
+    font-size: 10px !important;
+  }
+  .leaflet-control-attribution a { color: var(--acc) !important; }
+
+  /* Spectrogram Canvas & Telemetry Readouts */
+  .spec-body {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: #05080f;
+    padding: 10px 12px;
+  }
+  #spec {
+    width: 100%;
+    height: 255px;
+    background: #05080f;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    display: block;
+    cursor: crosshair;
+  }
+  .spec-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font: 500 11.5px/1.2 var(--mono);
+    color: var(--mute);
+  }
+  .telem-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--surface-2);
+    border-top: 1px solid var(--line);
+  }
+  .telem-cell {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .telem-k {
+    font: 500 10px/1.1 var(--mono);
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 3px;
+  }
+  .telem-v {
+    font: 600 12.5px/1.2 var(--mono);
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Panels & Cards */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .sec-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+    color: #fff;
+    letter-spacing: -0.01em;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sec-badge {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--acc);
+    background: var(--acc-glow);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 3px 7px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+
+  /* Buttons & Inputs */
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 4px 0 0;
+  }
+  .go {
+    padding: 8px 14px;
+    border: 1px solid var(--acc);
+    background: linear-gradient(180deg, rgba(56, 189, 248, 0.22), rgba(56, 189, 248, 0.1));
+    color: #fff;
+    border-radius: 6px;
+    cursor: pointer;
+    font: 600 13px/1.2 var(--sans);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+  }
+.go:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.38), rgba(56, 189, 248, 0.2));
+  border-color: #7dd3fc;
+  color: #fff;
+  box-shadow: 0 0 16px var(--acc-glow);
+}
+  .go:disabled { opacity: 0.45; cursor: default; }
+
+  .chip-btn {
+    padding: 6px 10px;
+    border: 1px solid var(--line-hi);
+    background: var(--surface);
+    color: var(--mute);
+    border-radius: 6px;
+    cursor: pointer;
+    font: 500 11.5px/1.2 var(--mono);
+    transition: all 0.15s ease;
+  }
+  .chip-btn:hover {
+    border-color: var(--acc);
+    color: var(--fg);
+    background: var(--surface-3);
+  }
+
+  .ans {
+    border-left: 3px solid var(--ok);
+    background: var(--ok-glow);
+    padding: 8px 10px;
+    border-radius: 0 6px 6px 0;
+    margin: 4px 0 0;
+    font: 500 12.5px/1.4 var(--mono);
+    color: #d1fae5;
+  }
+
+  /* Detections & Candidate List */
   #detList { list-style: none; margin: 0; padding: 0; }
-  #detList > li { border-top: 1px solid var(--line); }
+  #detList > li { border-top: 1px solid var(--line); padding: 4px 0; }
   #detList > li:first-child { border-top: 0; }
-  .det { display: grid; grid-template-columns: 6.5em 11em 1fr; gap: 10px; width: 100%; padding: 8px 4px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-  .det time { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .det .sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #detList > li.open .det { color: var(--acc); }
-  #detList > li ol { margin: 0 0 8px; padding-left: 7.5em; font-size: 13px; }
-  #detList > li ol li { cursor: pointer; margin: 6px 0; }
-  #detList > li > p, #detList > li > .link { margin: 4px 0 4px 7.5em; }
-  .link { background: none; border: 0; padding: 0; color: var(--acc); cursor: pointer; font: inherit; font-size: 13px; }
+  .det {
+    display: grid;
+    grid-template-columns: 6em 12.5em 1fr;
+    gap: 12px;
+    align-items: baseline;
+    width: 100%;
+    padding: 10px 10px;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .det:hover { background: var(--surface-2); }
+  .det time { font: 600 12.5px/1.2 var(--mono); color: var(--amber); font-variant-numeric: tabular-nums; }
+  .det .sum { font: 500 12.5px/1.2 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+  #detList > li.open .det { background: var(--surface-2); }
+  #detList > li.open .det .sum { color: var(--acc); }
+  #detList > li ol {
+    list-style: none;
+    margin: 4px 0 10px;
+    padding-left: 1em;
+    font-size: 13px;
+  }
+  #detList > li ol li {
+    cursor: pointer;
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+  }
+  #detList > li ol li:hover { border-color: var(--acc); background: var(--surface-3); }
+  #detList > li ol li b { font-family: var(--mono); color: var(--acc); }
+  #detList > li > p, #detList > li > .link { margin: 4px 0 6px 1em; }
+  .link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--acc);
+    cursor: pointer;
+    font: 500 12.5px/1.2 var(--mono);
+  }
   .mute { color: var(--mute); }
-  .ex { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-  .ex h3 { font-size: 15px; margin: 6px 0 4px; }
-  .ex p { margin: 4px 0 8px; font-size: 14px; }
-  .ex audio { width: 100%; }
-  .tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--mute); }
-  .tag.real { border-color: var(--acc); color: var(--acc); }
-  .ans { border-left: 3px solid var(--acc); padding-left: 8px; }
   .small { font-size: 12px; }
+  .small a { color: var(--acc); }
+
+  label { color: var(--mute); font-size: 12.5px; }
+  input[type="file"] {
+    width: 100%;
+    font: 500 12px/1.2 var(--mono);
+    padding: 5px 8px;
+    border: 1px solid var(--line-hi);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  #preview {
+    width: 100%;
+    max-height: 180px;
+    background: #000;
+    border-radius: 6px;
+  }
+  .range {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .range .t {
+    display: inline-flex;
+    border: 1px solid var(--line-hi);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  .range .t input {
+    width: 4.4em;
+    border: 0;
+    border-radius: 0;
+    text-align: center;
+    font: 500 12px/1.2 var(--mono);
+    font-variant-numeric: tabular-nums;
+    background: transparent;
+    color: var(--fg);
+    padding: 4px;
+  }
+  .range .t button {
+    border: 0;
+    border-left: 1px solid var(--line-hi);
+    background: var(--surface-3);
+    color: var(--acc);
+    font: 500 11.5px/1 var(--mono);
+    padding: 0 8px;
+    cursor: pointer;
+  }
+
+  footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font: 500 12px/1.4 var(--mono);
+    color: var(--mute);
+  }
+  footer a { color: var(--acc); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
   [hidden] { display: none !important; }
+
+  @media (max-width: 980px) {
+    .source-grid { grid-template-columns: repeat(2, 1fr); }
+    .workbench { grid-template-columns: 1fr; }
+    .spec-panel { border-right: 0; border-bottom: 1px solid var(--line); }
+    .pipeline { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .top { flex-direction: column; }
+    .top-actions { align-items: flex-start; }
+    .privacy-note { text-align: left; }
+    .source-grid { grid-template-columns: 1fr; }
+    .telem-strip { grid-template-columns: repeat(2, 1fr); }
+    .det { grid-template-columns: 5.5em 1fr; }
+    .det .sum { grid-column: 1 / -1; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <h1>Where was this recorded?</h1>
-  <p class="sub">A small plane flying past makes a Doppler curve. Match it against public ADS-B tracks and the curve pins down where the mic was. Audio never leaves your browser.</p>
-  <p class="sub"><b>The location comes only from the sound.</b> No GPS, no browser location prompt, no IP lookup, no cookies, no analytics.</p>
+  <header class="top">
+    <div>
+      <div class="brand-eyebrow"><span class="pulse-dot"></span> Acoustic ADS-B Geolocation</div>
+      <h1>Where was this recorded?</h1>
+      <p class="sub">When a propeller plane flies overhead, its engine pitch drops as it passes. From that sound alone, this tool measures the plane's speed and distance, then matches it against public ADS-B flight tracks to find where the microphone was on Earth.</p>
+    </div>
+    <div class="top-actions">
+      <a class="gh-link" href="https://github.com/teamchong/doppler-geo" target="_blank" rel="noopener" aria-label="View source on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>teamchong/doppler-geo</span>
+      </a>
+      <div class="privacy-note">Audio stays in browser · Zero GPS, IP, or cookies</div>
+    </div>
+  </header>
 
-  <div id="map"></div>
-  <section class="panel">
-    <h2>Try an example</h2>
-    <p class="mute">Each example comes with its own slice of the flight index: every low propeller flight on Earth from 11:36 to 11:48 CEST on 18 Jul 2025 (1,147 flights). The page gets only the sound. Not the place, not the time. Press Locate, or play it out loud and use Start recording to test your mic.</p>
-    <div class="cards">
-      <div class="ex">
-        <span class="tag">Simulated audio from real flights</span>
-        <h3>Two small planes over English farmland</h3>
-        <p>5 minutes of what a microphone in a field would have heard: two propeller aircraft passing about 4 minutes apart. The audio is synthesized from their real ADS-B tracks, because no public recording has two planes and an exact known spot.</p>
-        <audio controls preload="none" src="./examples/2025-07-18/two-planes-sim.mp3" id="exa-two"></audio>
-        <div class="row"><button class="go" id="ex-two">Locate</button></div>
-        <p class="ans" id="ans-two" hidden></p>
+  <section class="pipeline" aria-label="How It Works">
+    <div class="pipe-step">
+      <div class="pipe-head"><span class="step-num">Step 1</span><span>Read the Pitch Drop</span></div>
+      <div class="pipe-desc">As a plane approaches and recedes, its propeller tone slides down in frequency. Fitting that S-curve gives airspeed, closest slant distance, and pass time.</div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-head"><span class="step-num">Step 2</span><span>Search Worldwide Flights</span></div>
+      <div class="pipe-desc">Every propeller aircraft in the ADS-B index (live worldwide traffic or historical days) is scanned for passes matching that speed, altitude, and time window.</div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-head"><span class="step-num">Step 3</span><span>Pinpoint the Microphone</span></div>
+      <div class="pipe-desc">One pass narrows the world to a shortlist of flight paths. Two passes from different directions cross at a single point on the map.</div>
+    </div>
+  </section>
+
+  <section class="source-section" aria-label="Choose Audio Source">
+    <div class="section-eyebrow">
+      <h2>Choose an Audio Source <span class="sec-badge">1,147 Flights Indexed + Live ADS-B</span></h2>
+      <span class="mute small">Selecting any source resets the others</span>
+    </div>
+    <div class="source-grid">
+      <div class="source-card active-source" id="card-two" data-source="two">
+        <div class="source-top">
+          <span class="tag">Example 1 · 2 Passes</span>
+          <span class="ex-meta">5:00 · Cranfield, UK</span>
+        </div>
+        <h3>Two planes over English farmland</h3>
+        <p class="desc">Synthesized from two real ADS-B tracks 4 minutes apart (Cessna 152 <code>G-GFIG</code> and Westland Wasp <code>G-RIMM</code>). Two crossing passes pin the spot to ~40 meters.</p>
+        <div class="row">
+          <button class="go" id="ex-two">Locate Example 1</button>
+          <button type="button" class="chip-btn" data-audio="exa-two" data-seek="52">Pass 1 (0:52)</button>
+          <button type="button" class="chip-btn" data-audio="exa-two" data-seek="285">Pass 2 (4:45)</button>
+        </div>
+        <div class="source-detail">
+          <audio controls preload="none" src="./examples/2025-07-18/two-planes-sim.mp3" id="exa-two"></audio>
+          <p class="ans" id="ans-two" hidden></p>
+        </div>
       </div>
-      <div class="ex">
-        <span class="tag real">Real recording</span>
+
+      <div class="source-card" id="card-kampina" data-source="kampina">
+        <div class="source-top">
+          <span class="tag real">Example 2 · Real Audio</span>
+          <span class="ex-meta">2:08 · Kampina, NL</span>
+        </div>
         <h3>Birdsong on a Dutch heath</h3>
-        <p>2 minutes recorded for its birds and cows on Kampina heath, Netherlands, 16 km from the nearest airport. A small plane hums past in the background around 0:39. With one plane the sound narrows the world to a shortlist, not a single spot.</p>
-        <audio controls preload="none" src="./examples/2025-07-18/kampina-klankbeeld.mp3" id="exa-kampina"></audio>
-        <div class="row"><button class="go" id="ex-kampina">Locate</button></div>
-        <p class="ans" id="ans-kampina" hidden></p>
-        <p class="mute small">"prop plane birds fens Kampina Netherlands 1140 am 250718_1173" by <a href="https://freesound.org/people/klankbeeld/sounds/858688/">klankbeeld</a>, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.</p>
+        <p class="desc">Unedited wildlife recording 16 km from Eindhoven Airport. A distant Cessna 172 (<code>PH-TRG</code>) hums behind the birds around 0:39, narrowing the world to a shortlist.</p>
+        <div class="row">
+          <button class="go" id="ex-kampina">Locate Example 2</button>
+          <button type="button" class="chip-btn" data-audio="exa-kampina" data-seek="31">Hear Pass (0:31)</button>
+        </div>
+        <div class="source-detail">
+          <audio controls preload="none" src="./examples/2025-07-18/kampina-klankbeeld.mp3" id="exa-kampina"></audio>
+          <p class="ans" id="ans-kampina" hidden></p>
+          <p class="mute small" style="margin:0">Audio by <a href="https://freesound.org/people/klankbeeld/sounds/858688/" target="_blank" rel="noopener">klankbeeld</a> (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>)</p>
+        </div>
+      </div>
+
+      <div class="source-card" id="card-rec" data-source="rec">
+        <div class="source-top">
+          <span class="tag real">Live Microphone</span>
+          <span class="ex-meta">Worldwide Live ADS-B</span>
+        </div>
+        <h3>Record a plane overhead</h3>
+        <p class="desc">Step outside or open a window and record 60 to 90 seconds while a propeller plane passes. Voice filters stay off so low blade hum is preserved.</p>
+        <div class="row">
+          <button class="go" id="rec">Start Recording</button>
+          <span id="recT" class="mute" style="font-family:var(--mono)"></span>
+          <button id="save" class="chip-btn" hidden>Download .wav</button>
+        </div>
+      </div>
+
+      <div class="source-card" id="card-file" data-source="file">
+        <div class="source-top">
+          <span class="tag">Local Audio / Video</span>
+          <span class="ex-meta">In-Browser Decode</span>
+        </div>
+        <h3>Analyze a recorded file</h3>
+        <p class="desc">Choose a local audio or video clip where a propeller plane flies past. Decoded locally in WebAudio and matched against live and indexed flights.</p>
+        <div class="row">
+          <input type="file" id="file" accept="audio/*,video/*">
+        </div>
+        <div class="source-detail">
+          <video id="preview" controls playsinline hidden></video>
+          <div class="range" id="range" hidden>
+            <label>Window</label>
+            <span class="t"><input id="from" value="0:00" aria-label="from"><button id="setFrom" title="Use current playback position">now</button></span>
+            <span>to</span>
+            <span class="t"><input id="to" aria-label="to"><button id="setTo" title="Use current playback position">now</button></span>
+            <span id="len" class="mute"></span>
+          </div>
+          <div class="row">
+            <button class="go" id="run" disabled>Locate File</button>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
-  <div class="cards">
-  <section class="panel">
-    <h2>Record with your microphone</h2>
-    <div class="row">
-      <button class="go" id="rec">Start recording</button>
-      <span id="recT" class="mute"></span>
-      <button id="save" hidden>Save recording</button>
+  <section class="workbench-wrap" aria-label="Acoustic and Map Workbench">
+    <div class="status-bar">
+      <div id="status">Ready · Click Locate Example 1 above, record a plane overhead, or choose an audio/video file.</div>
+      <div id="busy"><span class="spin"></span><span id="busyMsg"></span></div>
     </div>
-    <p class="mute">Go outside or open a window. Record at least 90 s while a propeller plane passes. Voice processing is turned off so low hum survives.</p>
+    <div class="workbench">
+      <section id="specWrap" class="spec-panel">
+        <div class="panel-bar">
+          <span><strong>1. Acoustic Spectrogram</strong> (80 to 700 Hz)</span>
+          <span id="specDur">Click spectrogram to seek audio</span>
+        </div>
+        <div class="spec-body">
+          <canvas id="spec" width="640" height="255" title="Click to seek audio"></canvas>
+          <div class="spec-controls">
+            <span id="specHover">Hover for time and frequency · Cyan curve shows fitted Doppler pass</span>
+            <span id="specPassCount">Awaiting signal</span>
+          </div>
+        </div>
+        <div class="telem-strip" aria-label="Fitted Doppler Parameters">
+          <div class="telem-cell">
+            <div class="telem-k">Rest Pitch f₀</div>
+            <div class="telem-v" id="telF0">Awaiting pass</div>
+          </div>
+          <div class="telem-cell">
+            <div class="telem-k">Ground Speed v</div>
+            <div class="telem-v" id="telV">Awaiting pass</div>
+          </div>
+          <div class="telem-cell">
+            <div class="telem-k">Closest Slant d</div>
+            <div class="telem-v" id="telD">Awaiting pass</div>
+          </div>
+          <div class="telem-cell">
+            <div class="telem-k">Solver Fit</div>
+            <div class="telem-v" id="telFit">Idle</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="map-wrap">
+        <div class="panel-bar">
+          <span><strong>2. Flight Track &amp; Location Map</strong></span>
+          <div class="legend-pills">
+            <span class="leg"><span class="leg-swatch" style="background:#38bdf8"></span>ADS-B Track</span>
+            <span class="leg"><span class="leg-swatch" style="background:#f59e0b"></span>Est. Mic</span>
+            <span class="leg"><span class="leg-swatch" style="background:#22c55e"></span>Ground Truth</span>
+            <button type="button" id="mapThemeBtn" class="chip-btn" style="padding:2px 7px;font-size:10.5px">Map: Dark</button>
+          </div>
+        </div>
+        <div id="map" class="radar-tiles"></div>
+      </div>
+    </div>
   </section>
 
-  <section class="panel">
-    <h2>Or analyze an audio / video file</h2>
-    <div class="row"><input type="file" id="file" accept="audio/*,video/*"></div>
-    <video id="preview" controls playsinline hidden></video>
-    <div class="range" id="range" hidden>
-      <label>Analyze</label>
-      <span class="t"><input id="from" value="0:00" aria-label="from"><button id="setFrom" title="Use current playback position">now</button></span>
-      <span>to</span>
-      <span class="t"><input id="to" aria-label="to"><button id="setTo" title="Use current playback position">now</button></span>
-      <span id="len" class="mute"></span>
+  <section id="dets" class="panel" hidden>
+    <div class="sec-title">
+      <h2>Detected Propeller Passes &amp; Candidate Locations <span class="sec-badge" id="detBadge">Solved</span></h2>
+      <span class="mute small">Click a pass to jump audio · Click a candidate to zoom map</span>
     </div>
-    <div class="row"><button class="go" id="run" disabled>Locate</button></div>
-    <p class="mute">Pick the part of the clip where the plane passes, e.g. a movie scene. Every indexed day is searched, newest first.</p>
+    <ol id="detList"></ol>
   </section>
-  </div>
 
-  <canvas id="spec" width="1" height="1"></canvas>
-  <div id="busy"><span class="spin"></span><span id="busyMsg"></span></div>
-  <div id="status"></div>
-  <section id="dets" class="panel" hidden><h2>Detections</h2><ol id="detList"></ol></section>
-  <p class="mute">ADS-B data: <a href="https://adsb.lol">adsb.lol</a> (ODbL). Terrain: AWS Terrain Tiles. Inspired by <a href="https://youtu.be/UytYrhYLOKI" target="_blank" rel="noopener">colsto's video</a>.</p>
+  <footer>
+    <span>ADS-B telemetry: <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> (ODbL) · Map: OpenStreetMap</span>
+    <span>Inspired by <a href="https://youtu.be/UytYrhYLOKI" target="_blank" rel="noopener">colsto's acoustic geolocation video</a> · <a href="https://github.com/teamchong/doppler-geo" target="_blank" rel="noopener">GitHub: teamchong/doppler-geo</a></span>
+  </footer>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module" src="./app.js"></script>

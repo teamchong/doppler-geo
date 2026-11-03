@@ -5,18 +5,17 @@ const kbuf = new Float64Array(256);
 
 // Relative RMS between a traced curve and the retarded-time model, f0 fitted by least squares.
 export function score(pts, trk, x, y, z, start) {
-  let sfk = 0, skk = 0;
+  let sfk = 0, skk = 0, valid = 0, k0 = 0, k1 = 0;
   for (let i = 0; i < pts.length; i++) {
     const k = retardedK(trk, x, y, z, start + pts[i][0]);
-    if (!(k > 0)) return Infinity;
-    kbuf[i] = k;
-    sfk += pts[i][1] * k;
-    skk += k * k;
+    if (k > 0) { if (!valid) k0 = k; k1 = k; kbuf[i] = k; sfk += pts[i][1] * k; skk += k * k; valid++; }
+    else kbuf[i] = 0;
   }
+  if (valid < Math.max(4, pts.length - 2) || k0 <= 1.005 || k1 >= 0.995) return Infinity;
   const f0 = sfk / skk;
   let e = 0;
-  for (let i = 0; i < pts.length; i++) e += (pts[i][1] - f0 * kbuf[i]) ** 2;
-  return Math.sqrt(e / pts.length) / f0;
+  for (let i = 0; i < pts.length; i++) if (kbuf[i] > 0) e += (pts[i][1] - f0 * kbuf[i]) ** 2;
+  return Math.sqrt(e / valid) / f0;
 }
 
 // Every track instant whose speed matches is the CPA for ground points on its perpendicular, at the fitted slant distance.

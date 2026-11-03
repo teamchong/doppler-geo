@@ -148,14 +148,20 @@ export async function buildIndex(traces, { date, out, props, log = () => {} }) {
   }
   fs.closeSync(sfd);
   fs.writeFileSync(path.join(out, 'spd', `${date}.json`), JSON.stringify({ date, step: SPD_STEP, band: SPD_BAND, flights, keys }));
+  const days = fs
+    .readdirSync(path.join(out, 'idx'))
+    .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
+    .map((f) => f.slice(0, 10))
+    .sort();
+  fs.writeFileSync(path.join(out, 'days.json'), JSON.stringify(days));
   fs.rmSync(tmp, { recursive: true, force: true });
   return { files, kept, tiles: Object.keys(tiles).length, bytes: off, spdKeys: Object.keys(keys).length, spdBytes: soff, points: [...npts.values()].reduce((a, b) => a + b, 0) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [date, out = 'out'] = process.argv.slice(2);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) {
-    console.error('usage: cat parts | node scripts/build-index.mjs YYYY-MM-DD [out]');
+  const [date, out = 'public/data'] = process.argv.slice(2);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '') || process.stdin.isTTY) {
+    console.error('usage: cat vYYYY.MM.DD-planes-readsb-prod-0.tar.* | npm run index:day -- YYYY-MM-DD [public/data]');
     process.exit(1);
   }
   const stats = await buildIndex(tarTraces(process.stdin), { date, out, props: loadProps(), log: console.error });
