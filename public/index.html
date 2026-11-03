@@ -825,7 +825,7 @@
       <h2>Field Test Findings: Why the YouTube Video Overstates It <span class="sec-badge">Empirical Limits</span></h2>
       <span class="mute small">What happens when you test acoustic aircraft geolocation globally with zero location hints</span>
     </div>
-    <div class="pipeline" style="grid-template-columns:repeat(2,1fr);margin-bottom:0">
+    <div class="pipeline" style="margin-bottom:0">
       <div class="pipe-step">
         <div class="pipe-head"><span class="step-num">Finding 1</span><span>One Pass = 1,000+ Planes Worldwide, Not a Pin</span></div>
         <div class="pipe-desc">A single straight-line Doppler curve only yields ground speed v and slant distance d. If the recording time and region are unknown, roughly 1,000 propeller flights worldwide match a typical 45 m/s Cessna pass (see Example 2). Pinpointing a single spot on Earth requires 2+ crossing propeller passes in the same clip (Example 1) or a known live clock time.</div>
@@ -837,10 +837,6 @@
       <div class="pipe-step">
         <div class="pipe-head"><span class="step-num">Finding 3</span><span>Daytime VFR &amp; Outdoor Line-of-Sight Required</span></div>
         <div class="pipe-desc">Small piston aircraft (Cessna 172, Piper PA-28) fly almost exclusively under daytime Visual Flight Rules (VFR) outside major Class B commercial airport cores. Running a microphone indoors or overnight in a city typically detects zero passes: VFR prop traffic drops by over 95% at night, and windows plus indoor 60 to 180 Hz fan/HVAC hum mask distant blade tones.</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-head"><span class="step-num">Finding 4</span><span>Why Worldwide Search Needs an AOT Speed Index</span></div>
-        <div class="pipe-desc">The original workflow narrows the region and time window manually before simulating flights. To search the whole world in browser without location hints, we AOT-compile ADS-B tracks into (UTC minute, 4 m/s speed band) shards, invert (v, d, t_c) from the audio first, and project perpendicular candidate spots before 3D retarded-time verification.</div>
       </div>
     </div>
   </section>
