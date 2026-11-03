@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where was this recorded? Aircraft Doppler geolocation</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --mute: #666; --line: #ddd; --acc: #d9480f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --line: #333; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--mute); margin: 0 0 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  .go { padding: 8px 14px; border: 1px solid var(--line); background: none; color: inherit; border-radius: 6px; cursor: pointer; font: inherit; }
+  .go { border-color: var(--acc); color: var(--acc); }
+  .go:disabled { opacity: .5; cursor: default; }
+  .panel { border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 6px 0; }
+  label { color: var(--mute); }
+  input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: none; color: inherit; }
+  #map { height: 420px; margin-bottom: 12px; border-radius: 8px; border: 1px solid var(--line); }
+  #preview { width: 100%; max-height: 240px; background: #000; border-radius: 6px; }
+  .range { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; margin: 8px 0; }
+  .range .t { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .range .t input { width: 4.5em; border: 0; border-radius: 0; text-align: center; font-variant-numeric: tabular-nums; }
+  .range .t button { border: 0; border-left: 1px solid var(--line); background: none; color: var(--acc); font: inherit; font-size: 13px; padding: 0 8px; cursor: pointer; }
+  #spec { width: 100%; height: 180px; image-rendering: pixelated; background: #000; border-radius: 6px; }
+  #busy { display: flex; align-items: center; gap: 8px; height: 18px; color: var(--mute); font-size: 13px; margin: 8px 0 0; visibility: hidden; }
+  #busy.on { visibility: visible; }
+  .spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--acc); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status { min-height: 1.4em; margin: 8px 0; }
+  #detList { list-style: none; margin: 0; padding: 0; }
+  #detList > li { border-top: 1px solid var(--line); }
+  #detList > li:first-child { border-top: 0; }
+  .det { display: grid; grid-template-columns: 6.5em 11em 1fr; gap: 10px; width: 100%; padding: 8px 4px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .det time { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .det .sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #detList > li.open .det { color: var(--acc); }
+  #detList > li ol { margin: 0 0 8px; padding-left: 7.5em; font-size: 13px; }
+  #detList > li ol li { cursor: pointer; margin: 6px 0; }
+  #detList > li > p, #detList > li > .link { margin: 4px 0 4px 7.5em; }
+  .link { background: none; border: 0; padding: 0; color: var(--acc); cursor: pointer; font: inherit; font-size: 13px; }
+  .mute { color: var(--mute); }
+  .ex { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .ex h3 { font-size: 15px; margin: 6px 0 4px; }
+  .ex p { margin: 4px 0 8px; font-size: 14px; }
+  .ex audio { width: 100%; }
+  .tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--mute); }
+  .tag.real { border-color: var(--acc); color: var(--acc); }
+  .ans { border-left: 3px solid var(--acc); padding-left: 8px; }
+  .small { font-size: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Where was this recorded?</h1>
+  <p class="sub">A small plane flying past makes a Doppler curve. Match it against public ADS-B tracks and the curve pins down where the mic was. Audio never leaves your browser.</p>
+  <p class="sub"><b>The location comes only from the sound.</b> No GPS, no browser location prompt, no IP lookup, no cookies, no analytics.</p>
+
+  <div id="map"></div>
+  <section class="panel">
+    <h2>Try an example</h2>
+    <p class="mute">Each example comes with its own slice of the flight index: every low propeller flight on Earth from 11:36 to 11:48 CEST on 18 Jul 2025 (1,147 flights). The page gets only the sound. Not the place, not the time. Press Locate, or play it out loud and use Start recording to test your mic.</p>
+    <div class="cards">
+      <div class="ex">
+        <span class="tag">Simulated audio from real flights</span>
+        <h3>Two small planes over English farmland</h3>
+        <p>5 minutes of what a microphone in a field would have heard: two propeller aircraft passing about 4 minutes apart. The audio is synthesized from their real ADS-B tracks, because no public recording has two planes and an exact known spot.</p>
+        <audio controls preload="none" src="./examples/2025-07-18/two-planes-sim.mp3" id="exa-two"></audio>
+        <div class="row"><button class="go" id="ex-two">Locate</button></div>
+        <p class="ans" id="ans-two" hidden></p>
+      </div>
+      <div class="ex">
+        <span class="tag real">Real recording</span>
+        <h3>Birdsong on a Dutch heath</h3>
+        <p>2 minutes recorded for its birds and cows on Kampina heath, Netherlands, 16 km from the nearest airport. A small plane hums past in the background around 0:39. With one plane the sound narrows the world to a shortlist, not a single spot.</p>
+        <audio controls preload="none" src="./examples/2025-07-18/kampina-klankbeeld.mp3" id="exa-kampina"></audio>
+        <div class="row"><button class="go" id="ex-kampina">Locate</button></div>
+        <p class="ans" id="ans-kampina" hidden></p>
+        <p class="mute small">"prop plane birds fens Kampina Netherlands 1140 am 250718_1173" by <a href="https://freesound.org/people/klankbeeld/sounds/858688/">klankbeeld</a>, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="cards">
+  <section class="panel">
+    <h2>Record with your microphone</h2>
+    <div class="row">
+      <button class="go" id="rec">Start recording</button>
+      <span id="recT" class="mute"></span>
+      <button id="save" hidden>Save recording</button>
+    </div>
+    <p class="mute">Go outside or open a window. Record at least 90 s while a propeller plane passes. Voice processing is turned off so low hum survives.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Or analyze an audio / video file</h2>
+    <div class="row"><input type="file" id="file" accept="audio/*,video/*"></div>
+    <video id="preview" controls playsinline hidden></video>
+    <div class="range" id="range" hidden>
+      <label>Analyze</label>
+      <span class="t"><input id="from" value="0:00" aria-label="from"><button id="setFrom" title="Use current playback position">now</button></span>
+      <span>to</span>
+      <span class="t"><input id="to" aria-label="to"><button id="setTo" title="Use current playback position">now</button></span>
+      <span id="len" class="mute"></span>
+    </div>
+    <div class="row"><button class="go" id="run" disabled>Locate</button></div>
+    <p class="mute">Pick the part of the clip where the plane passes, e.g. a movie scene. Every indexed day is searched, newest first.</p>
+  </section>
+  </div>
+
+  <canvas id="spec" width="1" height="1"></canvas>
+  <div id="busy"><span class="spin"></span><span id="busyMsg"></span></div>
+  <div id="status"></div>
+  <section id="dets" class="panel" hidden><h2>Detections</h2><ol id="detList"></ol></section>
+  <p class="mute">ADS-B data: <a href="https://adsb.lol">adsb.lol</a> (ODbL). Terrain: AWS Terrain Tiles. Inspired by <a href="https://youtu.be/UytYrhYLOKI" target="_blank" rel="noopener">colsto's video</a>.</p>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
