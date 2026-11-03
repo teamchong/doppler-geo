@@ -27,7 +27,7 @@ When a propeller plane or helicopter flies past a microphone, its blade-pass ton
 | **1 aircraft pass** (unknown clock time) | Constrains ground speed $v$ and slant distance $d$, placing the microphone on a parallel corridor at distance $d$ on either side of the flight track | **Shortlist** of worldwide aircraft matching $(v, d)$ during the time window | **Example 2 (`kampina-klankbeeld.mp3`):** Unedited 2-minute wildlife recording on Kampina heath, Netherlands ([Freesound #858688](https://freesound.org/people/klankbeeld/sounds/858688/)). A distant Cessna 172 (`PH-TRG`, $v \approx 45\text{ m/s}$, $d \approx 1.97\text{ km}$) hums behind the birds around `0:39`, narrowing 1,147 worldwide flights to a shortlist containing `PH-TRG`. |
 | **2+ aircraft passes** (or known live clock time) | Intersects spatial-temporal corridors across all passes with a shared recording start time $t_0$ and ground position $(\text{lat}, \text{lon})$ | **Pinpointed spot** with uncertainty hull and ADS-B flight trajectories | **Example 1 (`two-planes-sim.mp3`):** Two real ADS-B tracks over Cranfield, UK (`G-GFIG` Cessna 152 and `G-RIMM` Westland Wasp) passing ~4 minutes apart. Crossing passes pin the microphone to **~40 meters** from ground truth across all 1,147 global propeller flights. |
 
-## Field Test Findings: Why the Viral Video Overstates It
+## Field Test Findings: Why the YouTube Video Overstates It
 
 We built `doppler-geo` to test how well acoustic aircraft geolocation actually works when you remove manual region/time hints and run against worldwide ADS-B traffic:
 
