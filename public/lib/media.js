@@ -59,15 +59,25 @@ class Decimator {
 // Raw microphone capture with all voice processing off (it eats low frequencies).
 // Keeps only the last `keepS` seconds, decimated as it arrives, so memory stays flat on long sessions.
 export class Recorder {
-  constructor(keepS = 300) {
+  constructor(keepS = 300, gain = 5) {
     this.keep = Math.round(keepS * FS);
+    this.gain = gain;
+    this.rms = 0;
   }
-
+  setGain(g) {
+    this.gain = g;
+    if (this.amp) this.amp.gain.value = g;
+  }
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
     this.ctx = new AudioContext({ sampleRate: SRC });
     await this.ctx.audioWorklet.addModule(new URL('./worklet.js', import.meta.url));
-    const src = this.ctx.createMediaStreamSource(this.stream), node = new AudioWorkletNode(this.ctx, 'tap'), mute = this.ctx.createGain();
+    const src = this.ctx.createMediaStreamSource(this.stream),
+      amp = this.ctx.createGain(),
+      node = new AudioWorkletNode(this.ctx, 'tap'),
+      mute = this.ctx.createGain();
+    amp.gain.value = this.gain;
+    this.amp = amp;
     mute.gain.value = 0;
     const dec = new Decimator();
     this.chunks = [];
@@ -79,6 +89,13 @@ export class Recorder {
       this.t0 ??= Date.now() / 1000 - e.data.length / this.ctx.sampleRate;
       this.n += e.data.length;
       const c = dec.push(e.data);
+      let s = 0;
+      for (let i = 0; i < c.length; i++) {
+        if (c[i] > 1) c[i] = 1;
+        else if (c[i] < -1) c[i] = -1;
+        s += c[i] * c[i];
+      }
+      this.rms = Math.sqrt(s / Math.max(1, c.length));
       this.chunks.push(c);
       this.held += c.length;
       while (this.held - this.chunks[0].length >= this.keep) {
@@ -87,9 +104,8 @@ export class Recorder {
         this.dropped += d.length;
       }
     };
-    src.connect(node).connect(mute).connect(this.ctx.destination);
+    src.connect(amp).connect(node).connect(mute).connect(this.ctx.destination);
   }
-
   get seconds() {
     return this.n / SRC;
   }

@@ -182,9 +182,10 @@ const pick = (a, m) => (a.length <= m ? a : Array.from({ length: m }, (_, i) => 
 export function analyze(x, fs = FS) {
   const S = spectrogram(x, fs), { F, B, b0, df, dt, t0 } = S;
   const base = { F, B, b0, df, dt, t0, dur: x.length / fs, events: [] };
-  if (F < 40) return { ...base, img: new Uint8ClampedArray(0) };
+  if (F < 8) return { ...base, img: new Uint8ClampedArray(0) };
   const Z = whiten(S), img = new Uint8ClampedArray(Z.length);
   for (let i = 0; i < Z.length; i++) img[i] = ((Z[i] + 4) / 8) * 255;
+  if (F < 40) return { ...base, img };
   const fr = (t) => Math.round((t - t0) / dt);
   for (let iter = 0; iter < 8 && base.events.length < 6; iter++) {
     const path = viterbi(Z, F, B);

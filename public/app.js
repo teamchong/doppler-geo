@@ -32,7 +32,7 @@ const call = (type, payload, transfer = []) =>
     worker.postMessage({ id, type, payload }, transfer);
   });
 
-const map = L.map('map', { preferCanvas: true }).setView([51.8, 2.2], 5);
+const map = L.map('map', { preferCanvas: true }).setView([20, 0], 2);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18,
   attribution: '&copy; OpenStreetMap',
@@ -402,6 +402,7 @@ function reset(kind, base = '', targetSource = kind) {
   drawDemoSpectrogram();
   layer.clearLayers();
   truthLayer.clearLayers();
+  if (kind === 'rec' || kind === 'file') map.setView([20, 0], 2);
   updateTelemetry(null);
   renderDets();
 }
@@ -545,7 +546,15 @@ async function locate(samples, origin, myGen = runGen) {
   const latest = dets[dets.length - 1];
   if (latest && !pinned) pick(latest, false);
   else renderDets();
-  if (!dets.length) return status(rec ? 'Listening for a propeller plane flying past...' : 'No aircraft Doppler pass found in this audio. Needs a propeller plane audibly flying past.');
+  if (!dets.length) {
+    return status(
+      rec
+        ? rec.seconds < 12
+          ? `Live Mic (${rec.seconds.toFixed(0)}s) · Spectrogram active · Need ~15 to 30s of a propeller pass to fit S-curve...`
+          : `Live checking (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller passes so far · Keep recording while a prop plane or helicopter flies past.`
+        : 'No aircraft Doppler pass found in this audio. Needs a propeller plane or helicopter audibly flying past (not a turbofan jet).',
+    );
+  }
   await where(myGen);
 }
 
@@ -588,10 +597,13 @@ async function where(myGen = runGen) {
 let onSearched = null;
 
 // Live mic: re-analyze the last 5 minutes every few seconds while recording; Stop just stops.
-const WINDOW_S = 300, EVERY_MS = 4000;
+const WINDOW_S = 300, EVERY_MS = 3000;
 let rec = null, tick = null, running = false;
+$('micGain')?.addEventListener('change', (ev) => {
+  if (rec) rec.setGain(Number(ev.target.value) || 5);
+});
 async function update() {
-  if (!rec || running || rec.seconds < 10) return;
+  if (!rec || running || rec.seconds < 3) return;
   running = true;
   const r = rec, { x, offset } = r.samples(WINDOW_S), myGen = runGen;
   try {
@@ -627,7 +639,7 @@ $('rec').onclick = async () => {
       $('save').hidden = false;
     }
     await r.stop();
-    if (r.seconds >= 10 && !running) {
+    if (r.seconds >= 3 && !running) {
       const { x, offset } = r.samples(WINDOW_S), myGen = runGen;
       recStart = r.t0;
       await locate(x, r.t0 + offset, myGen).catch((e) => status(e.message));
@@ -638,7 +650,8 @@ $('rec').onclick = async () => {
   }
   reset('rec', '', 'rec');
   $('save').hidden = true;
-  rec = new Recorder();
+  const gain = Number($('micGain')?.value) || 5;
+  rec = new Recorder(300, gain);
   try {
     await rec.start();
   } catch (e) {
@@ -647,12 +660,13 @@ $('rec').onclick = async () => {
   }
   saved = rec;
   $('rec').textContent = 'Stop';
-  status('Listening. Results update as planes pass.');
+  status(`Listening (${gain}x mic boost). Live-checking every 3s as propeller planes pass...`);
   let last = 0, lastPoll = 0;
   liveFeed.poll().catch(() => {});
   tick = setInterval(() => {
     if (!rec) return;
-    $('recT').textContent = `${rec.seconds.toFixed(0)} s`;
+    const lvl = Math.min(100, Math.round(Math.sqrt(rec.rms) * 180));
+    $('recT').textContent = `${rec.seconds.toFixed(0)}s · lvl ${lvl}%`;
     if (rec.seconds >= 1) {
       saved = rec;
       $('save').hidden = false;
