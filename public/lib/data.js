@@ -200,7 +200,7 @@ export class LiveFeed {
     }
     for (const [hex, e] of this.ac) {
       if (e.rows.length > 1) e.rows.sort((a, b) => a[0] - b[0]);
-      e.rows = e.rows.filter((x) => x[0] > this.now - 3600);
+      e.rows = e.rows.filter((x) => x[0] > this.now - 43200);
       if (!e.rows.length) this.ac.delete(hex);
     }
     if (!this.center && this.ac.size) this.lastSince = this.now;

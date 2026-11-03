@@ -408,13 +408,13 @@ function reset(kind, base = '', targetSource = kind) {
 }
 
 // Overlapping live windows see the same pass again; keep one entry and take the newer fit.
-function merge(events, origin) {
+function merge(events, origin, spec = null) {
   for (const e of events) {
     const at = origin + e.tc,
       d = dets.find((d) => Math.abs(d.at - at) < 10 && Math.abs(d.v - e.v) < 0.25 * d.v);
     const pts = e.pts.map(([t, f]) => [origin + t, f]);
-    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts });
-    else dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, cands: null });
+    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts, spec: spec ?? d.spec });
+    else dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, cands: null });
   }
   dets.sort((p, q) => p.at - q.at);
 }
@@ -468,6 +468,7 @@ function drawCands(d) {
 function pick(d, byUser) {
   [sel, pinned] = [d.id, pinned || byUser];
   if (byUser && src !== 'rec' && player) player.currentTime = d.at;
+  if (src === 'rec' && d?.spec) drawSpectrogram(d.spec);
   updateTelemetry(d);
   drawCands(d);
   renderDets();
@@ -541,8 +542,8 @@ async function locate(samples, origin, myGen = runGen) {
     if (myGen === runGen) busy('');
   });
   if (myGen !== runGen) return;
-  drawSpectrogram(a);
-  merge(a.events, origin);
+  merge(a.events, origin, a);
+  if (a.events.length || !dets.length) drawSpectrogram(a);
   const latest = dets[dets.length - 1];
   if (latest && !pinned) pick(latest, false);
   else renderDets();
