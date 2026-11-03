@@ -599,9 +599,6 @@ let onSearched = null;
 // Live mic: re-analyze the last 5 minutes every few seconds while recording; Stop just stops.
 const WINDOW_S = 300, EVERY_MS = 3000;
 let rec = null, tick = null, running = false;
-$('micGain')?.addEventListener('change', (ev) => {
-  if (rec) rec.setGain(Number(ev.target.value) || 5);
-});
 async function update() {
   if (!rec || running || rec.seconds < 3) return;
   running = true;
@@ -650,8 +647,7 @@ $('rec').onclick = async () => {
   }
   reset('rec', '', 'rec');
   $('save').hidden = true;
-  const gain = Number($('micGain')?.value) || 5;
-  rec = new Recorder(300, gain);
+  rec = new Recorder();
   try {
     await rec.start();
   } catch (e) {
@@ -660,7 +656,7 @@ $('rec').onclick = async () => {
   }
   saved = rec;
   $('rec').textContent = 'Stop';
-  status(`Listening (${gain}x mic boost). Live-checking every 3s as propeller planes pass...`);
+  status('Listening with auto max mic boost (+24 dB). Live-checking every 3s as propeller planes pass...');
   let last = 0, lastPoll = 0;
   liveFeed.poll().catch(() => {});
   tick = setInterval(() => {
