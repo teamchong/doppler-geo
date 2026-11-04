@@ -121,13 +121,11 @@ function drawDemoSpectrogram() {
   ctx.arc(cx, cy, 4.5 * dpr, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = '#e6edf7';
-  ctx.font = `600 ${Math.round(11 * dpr)}px ui-monospace, monospace`;
   ctx.fillText('Closest overhead pass (steepest pitch drop gives speed & distance)', cx + 8 * dpr, cy - 8 * dpr);
   ctx.fillStyle = '#8b9bb4';
   ctx.font = `${Math.round(10.5 * dpr)}px ui-monospace, monospace`;
   ctx.fillText('Approaching plane (higher pitch)', 48 * dpr, cy - 30 * dpr);
-  ctx.fillText('Receding plane (lower pitch)', w - 185 * dpr, cy + 32 * dpr);
+  ctx.fillText('Leaving plane (lower pitch)', w - 185 * dpr, cy + 32 * dpr);
 }
 
 function renderSpectrogramFrame() {
@@ -241,8 +239,8 @@ function drawSpectrogram(a) {
   octx.putImageData(im, 0, 0);
   specState = { a, off };
   const durS = Math.round(a.F * a.dt);
-  $('specDur').textContent = `Window ${Math.floor(durS / 60)}:${String(durS % 60).padStart(2, '0')} · Click to seek`;
-  $('specPassCount').textContent = `${a.events.length} Doppler pass${a.events.length === 1 ? '' : 'es'} fitted`;
+  $('specDur').textContent = `Window ${Math.floor(durS / 60)}:${String(durS % 60).padStart(2, '0')} · Click chart to jump audio`;
+  $('specPassCount').textContent = `${a.events.length} plane pass${a.events.length === 1 ? '' : 'es'} detected`;
   renderSpectrogramFrame();
 }
 
@@ -256,13 +254,13 @@ $('spec').addEventListener('mousemove', (ev) => {
     const { a } = specState;
     const t = (src === 'file' ? clipOffset : 0) + fx * a.F * a.dt;
     const hz = Math.round(a.b0 * a.df + (1 - fy) * a.B * a.df);
-    $('specHover').textContent = `t = ${hms(t)} · f = ${hz} Hz`;
+    $('specHover').textContent = `t = ${hms(t)} · pitch = ${hz} Hz`;
   }
   renderSpectrogramFrame();
 });
 $('spec').addEventListener('mouseleave', () => {
   specHoverPt = null;
-  $('specHover').textContent = 'Hover for time and frequency · Cyan curve shows fitted Doppler pass';
+  $('specHover').textContent = 'Move mouse over chart to see time and pitch · Blue curve shows the plane\'s pitch drop';
   renderSpectrogramFrame();
 });
 $('spec').addEventListener('click', (ev) => {
@@ -315,9 +313,9 @@ let dets = [], src = null, sel = null, pinned = false, player = null, clipOffset
 
 function updateTelemetry(d) {
   if (!d) {
-    $('telF0').textContent = 'Awaiting pass';
-    $('telV').textContent = 'Awaiting pass';
-    $('telD').textContent = 'Awaiting pass';
+    $('telF0').textContent = 'Waiting for plane';
+    $('telV').textContent = 'Waiting for plane';
+    $('telD').textContent = 'Waiting for plane';
     $('telFit').textContent = 'Idle';
     return;
   }
@@ -326,10 +324,10 @@ function updateTelemetry(d) {
   $('telD').textContent = `${Math.round(d.d)} m`;
   if (d.cands == null) $('telFit').textContent = 'Searching...';
   else if (!d.cands.length) $('telFit').textContent = 'No match';
-  else if (d.kind === 'shortlist') $('telFit').textContent = `${d.cands.length} shortlist`;
+  else if (d.kind === 'shortlist') $('telFit').textContent = `${d.cands.length} possible planes`;
   else {
     const best = d.cands[0];
-    $('telFit').textContent = `${(best.q * 100).toFixed(2)}% RMS (${dets.length} pass${dets.length === 1 ? '' : 'es'})`;
+    $('telFit').textContent = `${d.cands.length} spot${d.cands.length === 1 ? '' : 's'} (${dets.length} plane${dets.length === 1 ? '' : 's'})`;
   }
 }
 
@@ -438,28 +436,28 @@ function drawCands(d) {
     best.paths.forEach((p, idx) => {
       const trkColor = idx === 0 ? '#38bdf8' : '#a855f7';
       if (p.path?.length >= 2) {
+      if (p.path?.length) {
         L.polyline(p.path, { color: trkColor, weight: 2.5, opacity: 0.85 })
           .addTo(layer)
-          .bindTooltip(`ADS-B Track: ${label(p.flight)}`);
+          .bindTooltip(`Flight Path: ${label(p.flight)}`);
       }
       if (p.cpa) {
         L.polyline([p.cpa, [best.lat, best.lon]], { color: trkColor, weight: 1.5, dashArray: '4 5', opacity: 0.75 }).addTo(layer);
         L.circleMarker(p.cpa, { radius: 4, color: trkColor, weight: 1.5, fillOpacity: 0.9 })
           .addTo(layer)
-          .bindTooltip(`Closest Approach (CPA): ${label(p.flight)}`);
+          .bindTooltip(`Closest Point Overhead: ${label(p.flight)}`);
       }
     });
   }
   d.cands.forEach((r, i) => {
-    const conf = Math.max(0.15, Math.min(1, best.q / r.q)),
-      color = i ? '#64748b' : '#f59e0b',
-      tip = `#${i + 1}: ${r.flights.map(label).join(' + ')}`;
-    L.polygon(r.hull, { color, weight: i ? 1 : 2, fillOpacity: 0.25 * conf })
-      .addTo(layer)
-      .bindTooltip(tip);
-    L.circleMarker([r.lat, r.lon], { radius: i ? 5 : 7, color, weight: i ? 1.5 : 2, fillOpacity: 0.45 * conf })
-      .addTo(layer)
-      .bindTooltip(tip);
+    const conf = Math.max(0.15, Math.min(1, best.q / r.q));
+    const color = i ? '#64748b' : '#f59e0b';
+    const tip = `#${i + 1}: ${r.flights.map(label).join(' + ')}`;
+    if (r.hull?.length) {
+      L.polygon(r.hull, { color, weight: i ? 1 : 2, fillOpacity: 0.25 * conf })
+        .addTo(layer)
+        .bindTooltip(tip);
+    }
   });
   const boundsPts =
     d.kind === 'located'
@@ -480,11 +478,11 @@ function pick(d, byUser) {
 function summary(d) {
   if (d.cands == null) return 'searching flights...';
   if (!d.cands.length) return 'no matching flight';
-  if (d.kind === 'shortlist') return `${d.cands.length} planes worldwide could have made this. A 2nd plane pins it down`;
-  const r = d.cands[0],
-    more = d.cands.length - 1,
-    tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
-  return `Best guess: near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} on ${fmt(tPass)}${more ? `, ${more} other possibilit${more > 1 ? 'ies' : 'y'}` : ''}`;
+  if (d.kind === 'shortlist') return `${d.cands.length} possible planes worldwide could have made this. A 2nd plane pins it down.`;
+  const r = d.cands[0];
+  const more = d.cands.length - 1;
+  const tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
+  return `Best match: near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} on ${fmt(tPass)}${more ? ` (${more} other possible spot${more > 1 ? 's' : ''})` : ''}`;
 }
 
 function renderDets() {
@@ -492,7 +490,7 @@ function renderDets() {
   const badge = $('detBadge');
   if (badge) {
     const d = dets.find((x) => x.id === sel) ?? dets.at(-1);
-    badge.textContent = !d || d.cands == null ? 'Searching...' : d.kind === 'located' ? `Located (${d.cands.length})` : d.kind === 'shortlist' ? `${d.cands.length}-Plane Shortlist` : d.kind === 'unsure' ? 'Closest Fits' : 'No Match';
+    badge.textContent = !d || d.cands == null ? 'Searching' : d.kind === 'located' ? `Located (${d.cands.length})` : d.kind === 'shortlist' ? `${d.cands.length} Possible Planes` : d.kind === 'unsure' ? 'Closest Matches' : 'No Match';
   }
   const ol = $('detList');
   ol.replaceChildren(
@@ -553,13 +551,15 @@ async function locate(samples, origin, myGen = runGen) {
   if (latest && !pinned) pick(latest, false);
   else renderDets();
   if (!dets.length) {
-    return status(
-      rec
-        ? rec.seconds < 12
-          ? `Live Mic (${rec.seconds.toFixed(0)}s) · Spectrogram active · Need ~15 to 30s of a propeller pass to fit S-curve...`
-          : `Live checking (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller passes so far · Keep recording while a prop plane or helicopter flies past.`
-        : 'No aircraft Doppler pass found in this audio. Needs a propeller plane or helicopter audibly flying past (not a turbofan jet).',
-    );
+    if (!dets.length) {
+      return status(
+        src === 'rec'
+          ? rec.seconds < 12
+            ? `Live Mic (${rec.seconds.toFixed(0)}s) · Listening · Need about 15 to 30s of a propeller plane flying past`
+            : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
+          : 'No propeller plane or helicopter pass heard in this audio. Needs a steady propeller or rotor hum (big commercial jets do not work).'
+      );
+    }
   }
   await where(myGen);
 }
@@ -572,28 +572,28 @@ async function where(myGen = runGen) {
   searched = sig;
   const S = src === 'rec' ? recStart : 0,
     evs = dets.map((d) => ({ v: d.v, d: d.d, tc: d.at - S, pts: d.pts.map(([t, f]) => [t - S, f]) }));
-  status(`${dets.length} pass(es) detected. Searching flights...`);
-  busy(src === 'rec' ? 'Searching flights at this moment worldwide' : 'Searching every indexed flight worldwide');
+  status(`${dets.length} plane pass${dets.length === 1 ? '' : 'es'} detected. Searching flights...`);
+  busy(src === 'rec' ? 'Searching live flights worldwide' : 'Searching flights worldwide');
   let r;
   try {
     r = await search(evs, {
-      s0: src === 'rec' ? S - 2 : null,
-      s1: src === 'rec' ? S + 2 : null,
+      s0: src === 'rec' ? s - 2 : null,
+      s1: src === 'rec' ? s + 2 : null,
       base: dataBase,
       onProgress: (p) => {
-        if (myGen === runGen) busy(`Searching ${src === 'rec' ? 'flights at this moment' : 'every indexed flight'} worldwide (${Math.round(p * 100)}%)`);
+        if (myGen === runGen) busy(`Searching ${src === 'rec' ? 'live flights' : 'flights'} worldwide (${Math.round(p * 100)}%)`);
       },
     });
   } finally {
     if (myGen === runGen) busy('');
   }
-  if (myGen !== runGen || sig !== searched) return; // newer passes or source switch arrived meanwhile
-  for (const d of dets) [d.cands, d.kind] = [r.results, r.kind];
+  if (myGen !== runGen || sig !== searched) return;
+  for (const d of dets) Object.assign(d, { cands: r.results, kind: r.kind, used: r.used });
   const msg = {
-    located: `Located from ${r.used} planes. Best spot fits ${r.results.length > 1 ? `${(r.results[1].q / r.results[0].q).toFixed(1)}x better than the next` : 'alone'}.`,
-    unsure: `${dets.length} passes, but no spot fits all of them well. Showing the closest fits.`,
-    shortlist: `One plane: ${r.planes} flights worldwide could have made it. Keep recording until a 2nd plane passes.`,
-    none: 'No indexed flight matches. The plane may not carry ADS-B, or that day is not indexed.',
+    located: `Pinpointed from ${r.used} plane passes. Best location is ${r.results.length > 1 ? `${(r.results[1].q / r.results[0].q).toFixed(1)}x better than the next` : 'a unique match'}.`,
+    unsure: `${dets.length} plane passes heard, but no single location fits all of them well. Showing the closest matches.`,
+    shortlist: `1 plane heard: ${r.planes} flights worldwide were flying at this speed and distance. Record a 2nd plane at the same spot to pinpoint your location.`,
+    none: 'No matching flight found. The plane may not have had its flight tracker on, or that day is not in the database.',
   }[r.kind];
   status(msg);
   const d = dets.find((x) => x.id === sel) ?? dets.at(-1);
@@ -768,23 +768,19 @@ for (const id of Object.keys(EX)) {
     btn.disabled = true;
     const myGen = runGen;
     try {
-      busy('Decoding');
-      const x = await decodeFile(await (await fetch($(`exa-${id}`).src)).blob());
-      if (myGen !== runGen) return;
-      player = $(`exa-${id}`);
-      onSearched = (r) => {
-        L.circleMarker(ex.truth, { radius: 7, color: '#22c55e', weight: 3, fillOpacity: 0.15 }).addTo(truthLayer).bindTooltip('Ground Truth Answer', { permanent: true, direction: 'right' });
-        const top = r.results[0],
-          km = top && L.latLng(top.lat, top.lon).distanceTo(ex.truth) / 1000;
-        const inList = r.results.some((q) => q.flights.some((f) => ex.regs.includes(f.reg)));
-        ans.textContent =
-          `Answer: ${ex.what}. ` +
-          (r.kind === 'located'
-            ? `Best spot is ${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`} from it.`
-            : r.kind === 'shortlist'
-              ? `${ex.regs[0]} is ${inList ? '' : 'not '}in the ${r.results.length}-plane shortlist.`
-              : 'Not located.');
-        ans.hidden = false;
+      L.circleMarker(ex.truth, { radius: 7, color: '#22c55e', weight: 3, fillOpacity: 0.15 })
+        .addTo(truthLayer)
+        .bindTooltip('Actual Recording Location', { permanent: true, direction: 'right' });
+      const top = r.results[0];
+      const km = top && L.latLng(top.lat, top.lon).distanceTo(ex.truth) / 1000;
+      const inList = r.results.some((c) => c.flights.some((f) => ex.regs.includes(f.reg)));
+      ans.textContent = `Actual location: ${ex.what}. ` + (
+        r.kind === 'located'
+          ? `Estimated location is ${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`} away.`
+          : r.kind === 'shortlist'
+          ? `${ex.regs[0]} is ${inList ? 'included' : 'not'} in the ${r.results.length} possible planes worldwide.`
+          : 'Not found.'
+      );
         if (r.kind !== 'located') map.setView(ex.truth, 9);
       };
       await locate(x, 0, myGen);

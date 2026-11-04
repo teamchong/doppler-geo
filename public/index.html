@@ -646,85 +646,86 @@
 </head>
 <body>
 <main>
-  <header class="top">
-    <div>
-      <div class="brand-eyebrow"><span class="pulse-dot"></span> Acoustic ADS-B Geolocation</div>
-      <h1>Where was this recorded?</h1>
-      <p class="sub">When a propeller plane flies overhead, its engine pitch drops as it passes. From that sound alone, this tool measures the plane's speed and distance, then matches it against public ADS-B flight tracks to find where the microphone was on Earth.</p>
-    </div>
-    <div class="top-actions">
-      <a class="gh-link" href="https://github.com/teamchong/doppler-geo" target="_blank" rel="noopener" aria-label="View source on GitHub">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-        <span>teamchong/doppler-geo</span>
-      </a>
-      <div class="privacy-note">Audio stays in browser · Zero GPS, IP, or cookies</div>
-    </div>
-  </header>
+    <header class="top">
+      <div>
+        <div class="brand-eyebrow"><span class="pulse-dot"></span> Find Where a Recording Was Made from Airplane Sound</div>
+        <h1>Where was this recorded?</h1>
+        <p class="sub">When a propeller plane or helicopter flies overhead, its engine pitch drops as it passes. <strong>doppler-geo</strong> measures that pitch drop from an audio or video clip and compares it with public flight tracks worldwide to find where the recording was made.</p>
+      </div>
+      <div class="top-actions">
+        <a class="gh-link" href="https://github.com/teamchong/doppler-geo" target="_blank" rel="noopener" aria-label="View source on GitHub">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>teamchong/doppler-geo</span>
+        </a>
+        <div class="privacy-note">Audio stays in your browser · No GPS, IP lookup, or cookies</div>
+      </div>
+    </header>
 
-  <section class="pipeline" aria-label="How It Works">
-    <div class="pipe-step">
-      <div class="pipe-head"><span class="step-num">Step 1</span><span>Read the Pitch Drop</span></div>
-      <div class="pipe-desc">As a plane approaches and recedes, its propeller tone slides down in frequency. Fitting that S-curve gives airspeed, closest slant distance, and pass time.</div>
-    </div>
-    <div class="pipe-step">
-      <div class="pipe-head"><span class="step-num">Step 2</span><span>Search Worldwide Flights</span></div>
-      <div class="pipe-desc">Every propeller aircraft in the ADS-B index (live worldwide traffic or historical days) is scanned for passes matching that speed, altitude, and time window.</div>
-    </div>
-    <div class="pipe-step">
-      <div class="pipe-head"><span class="step-num">Step 3</span><span>Pinpoint the Microphone</span></div>
-      <div class="pipe-desc">One pass narrows the world to a shortlist of flight paths. Two passes from different directions cross at a single point on the map.</div>
-    </div>
-  </section>
+    <section class="pipeline" aria-label="How It Works">
+      <div class="pipe-step">
+        <div class="pipe-head"><span class="step-num">Step 1</span><span>Measure the Pitch Drop</span></div>
+        <div class="pipe-desc">A plane sounds higher-pitched as it approaches and lower-pitched as it flies away. From that pitch change, we calculate how fast the plane was flying and how close it passed.</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-head"><span class="step-num">Step 2</span><span>Search Flights Worldwide</span></div>
+        <div class="pipe-desc">We check public flight tracks around the world to find every propeller plane or helicopter that was flying at that same speed and distance.</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-head"><span class="step-num">Step 3</span><span>Pinpoint the Spot on the Map</span></div>
+        <div class="pipe-desc">1 plane gives a shortlist of possible flights worldwide. 2 planes flying past the same spot from different directions cross at 1 exact location on the map.</div>
+      </div>
+    </section>
 
-  <section class="source-section" aria-label="Choose Audio Source">
-    <div class="section-eyebrow">
-      <h2>Choose an Audio Source <span class="sec-badge">1,147 Flights Indexed + Live ADS-B</span></h2>
-      <span class="mute small">Selecting any source resets the others</span>
-    </div>
-    <div class="source-grid">
-      <div class="source-card active-source" id="card-two" data-source="two">
-        <div class="source-top">
-          <span class="tag">Example 1 · 2 Passes</span>
-          <span class="ex-meta">5:00 · Cranfield, UK</span>
-        </div>
-        <h3>Two planes over English farmland</h3>
-        <p class="desc">Synthesized from two real ADS-B tracks 4 minutes apart (Cessna 152 <code>G-GFIG</code> and Westland Wasp <code>G-RIMM</code>). Two crossing passes pin the spot to ~40 meters.</p>
-        <div class="row">
-          <button class="go" id="ex-two">Locate Example 1</button>
-          <button type="button" class="chip-btn" data-audio="exa-two" data-seek="52">Pass 1 (0:52)</button>
-          <button type="button" class="chip-btn" data-audio="exa-two" data-seek="285">Pass 2 (4:45)</button>
-        </div>
-        <div class="source-detail">
-          <audio controls preload="none" src="./examples/2025-07-18/two-planes-sim.mp3" id="exa-two"></audio>
-          <p class="ans" id="ans-two" hidden></p>
-        </div>
+    <section class="source-section" aria-label="Choose Audio Source">
+      <div class="section-eyebrow">
+        <h2>Choose an Audio Source <span class="sec-badge">1,147 Example Flights + Live Worldwide Flights</span></h2>
+        <span class="mute small">Selecting any source resets the others</span>
       </div>
 
-      <div class="source-card" id="card-kampina" data-source="kampina">
-        <div class="source-top">
-          <span class="tag real">Example 2 · Real Audio</span>
-          <span class="ex-meta">2:08 · Kampina, NL</span>
+      <div class="source-grid">
+        <div class="source-card active-source" id="card-two" data-source="two">
+          <div class="source-top">
+            <span class="tag">Example 1 · 2 Planes</span>
+            <span class="ex-meta">5:00 · Cranfield, UK</span>
+          </div>
+          <h3>Two planes over English farmland</h3>
+          <p class="desc">Two real flights near Cranfield, UK: a Cessna 152 (<code>G-GFIG</code>) and a Westland Wasp helicopter (<code>G-RIMM</code>) flying past 4 minutes apart. Because 2 planes cross paths over the same spot, they pinpoint the location to within 40 meters out of 1,147 flights worldwide.</p>
+          <div class="row">
+            <button class="go" id="ex-two">Locate Example 1</button>
+            <button type="button" class="chip-btn" data-audio="exa-two" data-seek="52">Plane 1 (0:52)</button>
+            <button type="button" class="chip-btn" data-audio="exa-two" data-seek="285">Plane 2 (4:45)</button>
+          </div>
+          <div class="source-detail">
+            <audio controls preload="none" src="./examples/2025-07-18/two-planes-sim.mp3" id="exa-two"></audio>
+            <p class="ans" id="ans-two" hidden></p>
+          </div>
         </div>
-        <h3>Birdsong on a Dutch heath</h3>
-        <p class="desc">Unedited wildlife recording 16 km from Eindhoven Airport. A distant Cessna 172 (<code>PH-TRG</code>) hums behind the birds around 0:39, narrowing the world to a shortlist.</p>
-        <div class="row">
-          <button class="go" id="ex-kampina">Locate Example 2</button>
-          <button type="button" class="chip-btn" data-audio="exa-kampina" data-seek="31">Hear Pass (0:31)</button>
-        </div>
-        <div class="source-detail">
-          <audio controls preload="none" src="./examples/2025-07-18/kampina-klankbeeld.mp3" id="exa-kampina"></audio>
-          <p class="ans" id="ans-kampina" hidden></p>
-          <p class="mute small" style="margin:0">Audio by <a href="https://freesound.org/people/klankbeeld/sounds/858688/" target="_blank" rel="noopener">klankbeeld</a> (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>)</p>
-        </div>
-      </div>
 
-      <div class="source-card" id="card-rec" data-source="rec">
-        <div class="source-top">
-          <span class="tag real">Live Microphone</span>
-          <span class="ex-meta">Worldwide Live ADS-B</span>
+        <div class="source-card" id="card-kampina" data-source="kampina">
+          <div class="source-top">
+            <span class="tag real">Example 2 · Real Recording</span>
+            <span class="ex-meta">2:08 · Kampina, NL</span>
+          </div>
+          <h3>Birdsong on a Dutch heath</h3>
+          <p class="desc">Real outdoor nature recording from the Netherlands. Only 1 small plane (Cessna 172 <code>PH-TRG</code>) flies past in the background at 0:39, so it gives a shortlist of possible planes worldwide rather than 1 exact pin.</p>
+          <div class="row">
+            <button class="go" id="ex-kampina">Locate Example 2</button>
+            <button type="button" class="chip-btn" data-audio="exa-kampina" data-seek="31">Hear Plane (0:31)</button>
+          </div>
+          <div class="source-detail">
+            <audio controls preload="none" src="./examples/2025-07-18/kampina-klankbeeld.mp3" id="exa-kampina"></audio>
+            <p class="ans" id="ans-kampina" hidden></p>
+            <p class="mute small" style="margin:0">Audio by <a href="https://freesound.org/people/klankbeeld/sounds/858688/" target="_blank" rel="noopener">klankbeeld</a> (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>)</p>
+          </div>
         </div>
+
+        <div class="source-card" id="card-rec" data-source="rec">
+          <div class="source-top">
+            <span class="tag real">Live Microphone</span>
+            <span class="ex-meta">Live Worldwide Flights</span>
+          </div>
           <h3>Record a propeller plane overhead</h3>
-          <p class="desc">Step outside or open a window and record 30 to 90 seconds while a propeller plane or helicopter flies past. Checks live every 3s; .wav download saves 5 min from the first detected pass.</p>
+          <p class="desc">Step outside in the daytime and record 30 to 90 seconds while a small propeller plane or helicopter flies past. Searches live flights every 3 seconds and lets you save a .wav clip.</p>
           <div class="row">
             <button class="go" id="rec">Start Recording</button>
             <span id="recT" class="mute" style="font-family:var(--mono)"></span>
@@ -732,116 +733,116 @@
           </div>
         </div>
 
-      <div class="source-card" id="card-file" data-source="file">
-        <div class="source-top">
-          <span class="tag">Local Audio / Video</span>
-          <span class="ex-meta">In-Browser Decode</span>
-        </div>
-        <h3>Analyze a recorded file</h3>
-        <p class="desc">Choose a local audio or video clip where a propeller plane flies past. Decoded locally in WebAudio and matched against live and indexed flights.</p>
-        <div class="row">
-          <input type="file" id="file" accept="audio/*,video/*">
-        </div>
-        <div class="source-detail">
-          <video id="preview" controls playsinline hidden></video>
-          <div class="range" id="range" hidden>
-            <label>Window</label>
-            <span class="t"><input id="from" value="0:00" aria-label="from"><button id="setFrom" title="Use current playback position">now</button></span>
-            <span>to</span>
-            <span class="t"><input id="to" aria-label="to"><button id="setTo" title="Use current playback position">now</button></span>
-            <span id="len" class="mute"></span>
+        <div class="source-card" id="card-file" data-source="file">
+          <div class="source-top">
+            <span class="tag">Local Audio / Video</span>
+            <span class="ex-meta">Runs in Your Browser</span>
           </div>
+          <h3>Analyze a recorded file</h3>
+          <p class="desc">Pick an audio or video file from your device where a propeller plane or helicopter flies past. Processed right in your browser and matched against flight tracks.</p>
           <div class="row">
-            <button class="go" id="run" disabled>Locate File</button>
-            <button type="button" class="chip-btn" id="clearFile" hidden>Clear / Reset</button>
+            <input type="file" id="file" accept="audio/*,video/*" />
+          </div>
+          <div class="source-detail">
+            <video id="preview" controls playsinline hidden></video>
+            <div class="range" id="range" hidden>
+              <label>Window</label>
+              <span class="t"><input id="from" value="0:00" aria-label="from"><button id="setFrom" title="Use current playback position">now</button></span>
+              <span>to</span>
+              <span class="t"><input id="to" aria-label="to"><button id="setTo" title="Use current playback position">now</button></span>
+              <span id="len" class="mute"></span>
+            </div>
+            <div class="row">
+              <button class="go" id="run" disabled>Locate File</button>
+              <button type="button" class="chip-btn" id="clearFile" hidden>Clear / Reset</button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="workbench-wrap" aria-label="Acoustic and Map Workbench">
-    <div class="status-bar">
-      <div id="status">Ready · Click Locate Example 1 above, record a plane overhead, or choose an audio/video file.</div>
-      <div id="busy"><span class="spin"></span><span id="busyMsg"></span></div>
-    </div>
-    <div class="workbench">
-      <section id="specWrap" class="spec-panel">
-        <div class="panel-bar">
-          <span><strong>1. Acoustic Spectrogram</strong> (80 to 700 Hz)</span>
-          <span id="specDur">Click spectrogram to seek audio</span>
-        </div>
-        <div class="spec-body">
-          <canvas id="spec" width="640" height="255" title="Click to seek audio"></canvas>
+    <section class="workbench-wrap" aria-label="Acoustic and Map Workbench">
+      <div class="status-bar">
+        <div id="status">Ready · Click Locate Example 1 above, record a plane overhead, or choose an audio/video file.</div>
+        <div id="busy"><span class="spin"></span><span id="busyMsg"></span></div>
+      </div>
+
+      <div class="workbench">
+        <section id="specWrap" class="spec-panel">
+          <div class="panel-bar">
+            <span><strong>1. Sound Pitch Over Time (Spectrogram)</strong></span>
+            <span id="specDur">Click chart to jump audio</span>
+          </div>
+          <div class="spec-body">
+            <canvas id="spec" width="640" height="255" title="Click to seek audio"></canvas>
+          </div>
           <div class="spec-controls">
-            <span id="specHover">Hover for time and frequency · Cyan curve shows fitted Doppler pass</span>
-            <span id="specPassCount">Awaiting signal</span>
+            <span id="specHover">Move mouse over chart to see time and pitch · Blue curve shows the plane's pitch drop</span>
+            <span id="specPassCount">Waiting for audio</span>
           </div>
+          <div class="telem-strip" aria-label="Measured Plane Measurements">
+            <div class="telem-cell">
+              <div class="telem-k">Engine Pitch</div>
+              <div class="telem-v" id="telF0">Waiting for plane</div>
+            </div>
+            <div class="telem-cell">
+              <div class="telem-k">Plane Speed</div>
+              <div class="telem-v" id="telV">Waiting for plane</div>
+            </div>
+            <div class="telem-cell">
+              <div class="telem-k">Closest Distance</div>
+              <div class="telem-v" id="telD">Waiting for plane</div>
+            </div>
+            <div class="telem-cell">
+              <div class="telem-k">Match Quality</div>
+              <div class="telem-v" id="telFit">Idle</div>
+            </div>
+          </div>
+        </section>
+
+        <div class="map-wrap">
+          <div class="panel-bar">
+            <span><strong>2. Flight Track &amp; Location Map</strong></span>
+            <div class="legend-pills">
+              <span class="leg"><span class="leg-swatch" style="background:#38bdf8"></span>Flight Path</span>
+              <span class="leg"><span class="leg-swatch" style="background:#f59e0b"></span>Estimated Location</span>
+              <span class="leg"><span class="leg-swatch" style="background:#22c55e"></span>Actual Location</span>
+              <button type="button" id="mapThemeBtn" class="chip-btn" style="padding:2px 7px;font-size:10.5px">Map: Dark</button>
+            </div>
+          </div>
+          <div id="map" class="radar-tiles"></div>
         </div>
-        <div class="telem-strip" aria-label="Fitted Doppler Parameters">
-          <div class="telem-cell">
-            <div class="telem-k">Rest Pitch f₀</div>
-            <div class="telem-v" id="telF0">Awaiting pass</div>
-          </div>
-          <div class="telem-cell">
-            <div class="telem-k">Ground Speed v</div>
-            <div class="telem-v" id="telV">Awaiting pass</div>
-          </div>
-          <div class="telem-cell">
-            <div class="telem-k">Closest Slant d</div>
-            <div class="telem-v" id="telD">Awaiting pass</div>
-          </div>
-          <div class="telem-cell">
-            <div class="telem-k">Solver Fit</div>
-            <div class="telem-v" id="telFit">Idle</div>
-          </div>
+      </div>
+    </section>
+
+    <section id="dets" class="panel" hidden>
+      <div class="sec-title">
+        <h2>Detected Plane Passes &amp; Possible Locations <span class="sec-badge" id="detBadge">Solved</span></h2>
+        <span class="mute small">Click a plane pass to jump audio · Click a location to zoom map</span>
+      </div>
+      <ol id="detList"></ol>
+    </section>
+
+    <section class="panel" aria-label="What We Found in Real-World Testing">
+      <div class="sec-title">
+        <h2>What We Found in Real-World Testing <span class="sec-badge">Key Limits</span></h2>
+        <span class="mute small">What happens when you test airplane sound geolocation across the whole world with no location hints</span>
+      </div>
+      <div class="pipeline" style="margin-bottom:0">
+        <div class="pipe-step">
+          <div class="pipe-head"><span class="step-num">Finding 1</span><span>Hearing Just 1 Plane Cannot Pinpoint Your Location</span></div>
+          <div class="pipe-desc">The sound of a single plane only tells you how fast it flew and how close it passed. It cannot tell you which direction or country it was in. Because hundreds of small planes around the world fly at the exact same speed at any moment, 1 plane only gives a long list of hundreds of possible matches worldwide (like Example 2). You must record at least 2 different planes flying past the same spot to lock onto one exact location on the map (like Example 1).</div>
         </div>
-      </section>
-
-      <div class="map-wrap">
-        <div class="panel-bar">
-          <span><strong>2. Flight Track &amp; Location Map</strong></span>
-          <div class="legend-pills">
-            <span class="leg"><span class="leg-swatch" style="background:#38bdf8"></span>ADS-B Track</span>
-            <span class="leg"><span class="leg-swatch" style="background:#f59e0b"></span>Est. Mic</span>
-            <span class="leg"><span class="leg-swatch" style="background:#22c55e"></span>Ground Truth</span>
-            <button type="button" id="mapThemeBtn" class="chip-btn" style="padding:2px 7px;font-size:10.5px">Map: Dark</button>
-          </div>
+        <div class="pipe-step">
+          <div class="pipe-head"><span class="step-num">Finding 2</span><span>Big Commercial Jets (737, A320, A380) Do Not Work</span></div>
+          <div class="pipe-desc">Jet airliners make a loud, rushing roar across all frequencies rather than a single steady musical note, and pilots constantly change engine power during climb and landing. This method only works on propeller planes, turboprops, and helicopters whose spinning blades produce a steady hum.</div>
         </div>
-        <div id="map" class="radar-tiles"></div>
+        <div class="pipe-step">
+          <div class="pipe-head"><span class="step-num">Finding 3</span><span>Needs Daytime &amp; an Outdoor Microphone</span></div>
+          <div class="pipe-desc">Small propeller planes mostly fly during the day in clear weather and stay away from major city airports. Recording indoors or overnight usually catches nothing because very few prop planes fly at night, and windows plus room or computer fan noise drown out distant propeller hum.</div>
+        </div>
       </div>
-    </div>
-  </section>
-
-  <section id="dets" class="panel" hidden>
-    <div class="sec-title">
-      <h2>Detected Propeller Passes &amp; Candidate Locations <span class="sec-badge" id="detBadge">Solved</span></h2>
-      <span class="mute small">Click a pass to jump audio · Click a candidate to zoom map</span>
-    </div>
-    <ol id="detList"></ol>
-  </section>
-
-  <section class="panel" aria-label="Field Test Findings">
-    <div class="sec-title">
-      <h2>Field Test Findings: Why the YouTube Video Overstates It <span class="sec-badge">Empirical Limits</span></h2>
-      <span class="mute small">What happens when you test acoustic aircraft geolocation globally with zero location hints</span>
-    </div>
-    <div class="pipeline" style="margin-bottom:0">
-      <div class="pipe-step">
-        <div class="pipe-head"><span class="step-num">Finding 1</span><span>Hearing Just 1 Plane Cannot Pinpoint Your Location</span></div>
-        <div class="pipe-desc">The sound of a single plane only tells you how fast it flew and how close it passed. It cannot tell you which direction or country it was in. Because hundreds of small planes around the world fly at the exact same speed at any moment, 1 plane only gives a long list of hundreds of possible matches worldwide (like Example 2). You must record at least 2 different planes flying past the same spot to lock onto one exact location on the map (like Example 1).</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-head"><span class="step-num">Finding 2</span><span>Big Commercial Jets (737, A320, A380) Do Not Work</span></div>
-        <div class="pipe-desc">Jet airliners make a loud, rushing roar across all frequencies rather than a single steady musical note, and pilots constantly change engine power during climb and landing. This method only works on propeller planes, turboprops, and helicopters whose spinning blades produce a steady hum.</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-head"><span class="step-num">Finding 3</span><span>Needs Daytime &amp; an Outdoor Microphone</span></div>
-        <div class="pipe-desc">Small propeller planes mostly fly during the day in clear weather and stay away from major city airports. Recording indoors or overnight usually catches nothing because very few prop planes fly at night, and windows plus room/computer fan noise drown out distant propeller hum.</div>
-      </div>
-    </div>
-  </section>
-
+    </section>
   <footer>
     <span>ADS-B telemetry: <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> (ODbL) · Map: OpenStreetMap</span>
     <span>Inspired by <a href="https://youtu.be/UytYrhYLOKI" target="_blank" rel="noopener">colsto's acoustic geolocation video</a> · <a href="https://github.com/teamchong/doppler-geo" target="_blank" rel="noopener">GitHub: teamchong/doppler-geo</a></span>
