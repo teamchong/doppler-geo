@@ -39,12 +39,14 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 const layer = L.layerGroup().addTo(map),
   truthLayer = L.layerGroup().addTo(map);
+map.on?.('moveend', () => {
+  if (dets.length) renderDets();
+});
 
 $('mapThemeBtn')?.addEventListener('click', () => {
   const dark = $('map').classList.toggle('radar-tiles');
   $('mapThemeBtn').textContent = dark ? 'Map: Dark' : 'Map: Light';
 });
-
 // Acoustic Inferno-inspired 256-entry RGB lookup table
 const LUT = new Uint8Array(256 * 3);
 for (let i = 0; i < 256; i++) {
@@ -717,17 +719,14 @@ function renderDets() {
               .map((op) => `Pass #${dets[op]?.id ?? op + 1}`)
               .join(' & ')
           : '';
-        note.textContent = isIx
-          ? `Pass #${d.id} matched ${pCnt || d.cands.length} flights worldwide on its own. The highlighted flight below crossed paths with ${otherPasses} at the same spot:`
-          : `Every plane below was flying at Pass #${d.id}'s speed and distance (${pCnt || d.cands.length} worldwide). With 1 pass alone they all fit equally well; a 2nd pass narrows it to the intersection:`;
         const ixHexes = new Set();
         if (isIx) {
           d.cands.slice(0, SHOW).forEach((r, i) => {
             const f = r.flights?.[d.ixPos];
             if (f?.hex) ixHexes.add(f.hex);
             const pPath = r.paths?.[d.ixPos];
-          const tPass = passEpoch(r, d, d.ixPos);
-          const c = document.createElement('li');
+            const tPass = passEpoch(r, d, d.ixPos);
+            const c = document.createElement('li');
             c.className = 'ix-match';
             c.innerHTML = `<span class="ix-tag"></span> <b></b> <span></span><br><span class="mute"></span>`;
             c.children[0].textContent = `★ Intersects ${otherPasses}${i === 0 ? ' — Pinpointed Spot' : ` (#${i + 1})`}`;
@@ -747,7 +746,26 @@ function renderDets() {
           });
         }
         const rawPassList = d.passList?.length ? d.passList : d.kind === 'shortlist' ? d.cands : [];
-        const otherList = rawPassList.filter((r) => !ixHexes.has(r.flights?.[0]?.hex));
+        const baseOtherList = rawPassList.filter((r) => !ixHexes.has(r.flights?.[0]?.hex));
+        const mapZoomed = (map.getZoom?.() ?? 2) >= 6 && map.getCenter && map.getBounds;
+        const mapCenter = mapZoomed ? map.getCenter() : null;
+        const mapBounds = mapZoomed ? map.getBounds() : null;
+        const inViewCnt = mapBounds ? baseOtherList.filter((r) => mapBounds.contains([r.lat, r.lon])).length : 0;
+        const otherList = mapCenter
+          ? [...baseOtherList].sort((a, b) => {
+              const aIn = mapBounds?.contains([a.lat, a.lon]) ? 0 : 1,
+                bIn = mapBounds?.contains([b.lat, b.lon]) ? 0 : 1;
+              if (aIn !== bIn) return aIn - bIn;
+              return L.latLng(a.lat, a.lon).distanceTo(mapCenter) - L.latLng(b.lat, b.lon).distanceTo(mapCenter);
+            })
+          : baseOtherList;
+        note.textContent = isIx
+          ? `Pass #${d.id} matched ${pCnt || d.cands.length} flights worldwide on its own. The highlighted flight below crossed paths with ${otherPasses} at the same spot:`
+          : mapZoomed
+            ? inViewCnt > 0
+              ? `Showing ${inViewCnt} matching plane${inViewCnt === 1 ? '' : 's'} inside your current map view (out of ${pCnt || d.cands.length} worldwide at this speed), sorted by closest to map center:`
+              : `None of the ${pCnt || d.cands.length} planes at ${Math.round(d.v * 3.6)} km/h were directly inside this map box at ${when(d)} — showing the closest matches to your map center:`
+            : `Every plane below was flying at Pass #${d.id}'s speed and distance (${pCnt || d.cands.length} worldwide). Zoom the map to your area to filter by location, or record a 2nd plane to pinpoint:`;
         const showCount = showAll ? otherList.length : Math.max(0, SHOW - (isIx ? Math.min(d.cands.length, 2) : 0));
         otherList.slice(0, showCount).forEach((r, i) => {
           const f = r.flights?.[0];
@@ -755,7 +773,9 @@ function renderDets() {
           c.innerHTML = `<b></b> <span></span> <span class="mute"></span>`;
           c.children[0].textContent = `#${i + 1 + ixHexes.size} ${label(f)}`;
           const tPass = passEpoch(r, d, -1);
-          c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})`;
+          const distKm = mapCenter ? L.latLng(r.lat, r.lon).distanceTo(mapCenter) / 1000 : null;
+          const distTag = distKm != null ? ` · ${distKm < 10 ? distKm.toFixed(1) : Math.round(distKm)} km from map center` : '';
+          c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})${distTag}`;
           c.children[2].textContent = isIx ? `— Pass #${d.id} only (no intersection with ${otherPasses})` : `— Pass #${d.id} candidate`;
           c.onclick = () => {
             L.circleMarker([r.lat, r.lon], { radius: 5, color: '#38bdf8', weight: 2, fillOpacity: 0.9 })

@@ -4,7 +4,7 @@ import PROPS from '../public/prop-types.json';
 const PROP = new Set(PROPS);
 const LIVE_TYPES = PROPS.slice(0, 750).join(',');
 const FIELDS = ['hex', 't', 'r', 'flight', 'lat', 'lon', 'alt_baro', 'alt_geom', 'gs', 'track', 'baro_rate', 'geom_rate', 'seen_pos'];
-const WINDOW_S = 7200;
+const WINDOW_S = 21600;
 const MIN_STEP_S = 8;
 const POLL_MIN_MS = 10_000;
 const ALARM_MS = 20_000;
