@@ -140,19 +140,22 @@ export class LiveTrackerDO extends DurableObject {
 
   async fetch(req) {
     const url = new URL(req.url);
-    const since = Number(url.searchParams.get('since')) || 0;
     try {
       await this._pollIfNeeded();
     } catch (e) {
       if (!this.ac.size) return json({ error: e.message }, { status: 502 });
     }
+    const nowSec = (this.now || Date.now()) / 1000;
+    const sinceParam = url.searchParams.get('since');
+    const since = sinceParam !== null ? Number(sinceParam) || 0 : nowSec - 1200;
+    const until = Number(url.searchParams.get('until')) || Infinity;
     const tracks = [];
     let t0 = Infinity, t1 = -Infinity;
     for (const e of this.ac.values()) {
       if (!e.p.length) continue;
       if (e.p[0][0] < t0) t0 = e.p[0][0];
       if (e.p[e.p.length - 1][0] > t1) t1 = e.p[e.p.length - 1][0];
-      const pts = since > 0 ? e.p.filter((r) => r[0] > since - 1) : e.p;
+      const pts = since > 0 || until < Infinity ? e.p.filter((r) => r[0] > since - 1 && r[0] <= until + 1) : e.p;
       if (pts.length) tracks.push({ h: e.h, t: e.t, r: e.r, fl: e.fl, p: pts });
     }
     return json(

@@ -71,11 +71,27 @@ export function rangeGunzip(url, off, len) {
 
 const isoDay = (d) => new Date(d * 86400e3).toISOString().slice(0, 10);
 
-const daysCache = new Map();
+const daysCache = new Map(),
+  rootCache = new Map();
 export async function dataRoot(base = '') {
-  return base || '';
+  if (base) return base;
+  if (!rootCache.has('')) {
+    rootCache.set(
+      '',
+      fetch('/data/days.json')
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => [])
+        .then((d) => {
+          if (Array.isArray(d) && d.length) {
+            daysCache.set('', Promise.resolve(d));
+            return '';
+          }
+          return './examples/2025-07-18';
+        }),
+    );
+  }
+  return rootCache.get('');
 }
-
 export async function availableDays(base = '') {
   const root = await dataRoot(base);
   if (!daysCache.has(root)) {
@@ -142,10 +158,16 @@ export class LiveFeed {
     this.center = null;
     this.latest = [];
     this.now = 0;
+    this.clockOffset = 0;
+    this.lastPollMs = 0;
     this.lastSince = 0;
     this.ver = 0;
     this._idxVer = -1;
-    this._idx = new Map();
+    this._minIdx = new Map();
+    this._minRaw = new Map();
+    this._flights = [];
+    this._trks = [];
+    this._day0 = 0;
   }
   async poll() {
     const q = this.center
@@ -156,14 +178,33 @@ export class LiveFeed {
     const r = await fetch(`${this.base}/api/live${q}`);
     if (!r.ok) throw new Error(`live feed ${r.status}`);
     const d = await r.json();
+    return this._ingest(d, true);
+  }
+  async ensureWindow(s0, s1) {
+    const nowEst = this.now || Date.now() / 1000;
+    if (s1 < nowEst - 10800 || s0 > nowEst + 600) return;
+    const win = this.window();
+    if (win && s0 >= win[0] + 60 && s1 <= win[1] - 5) return;
+    const since = Math.floor(s0 - 180),
+      until = Math.ceil(s1 + 180);
+    const r = await fetch(`${this.base}/api/live?since=${since}&until=${until}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    this._ingest(d, false);
+  }
+  _ingest(d, updateSince = true) {
+    const localNow = Date.now() / 1000;
     this.now = (d.now ?? Date.now()) / 1000;
-    this.latest = d.ac ?? [];
+    if (Math.abs(this.now - localNow) > 60) this.clockOffset = this.now - localNow;
+    else this.clockOffset = 0;
+    if (updateSince) this.lastPollMs = Date.now();
+    if (Array.isArray(d.ac) && d.ac.length) this.latest = d.ac;
     if (Array.isArray(d.tracks)) {
       for (const tr of d.tracks) {
         if (!tr?.h || !Array.isArray(tr.p)) continue;
         let e = this.ac.get(tr.h);
         if (!e) {
-          e = { meta: { hex: tr.h, type: tr.t, reg: tr.r ?? null, flight: tr.fl ?? null }, rows: [] };
+          e = { meta: { hex: tr.h, type: tr.t, reg: tr.r ?? null, flight: tr.fl ?? null }, rows: [], _dirty: true };
           this.ac.set(tr.h, e);
         } else {
           e.meta.type = tr.t || e.meta.type;
@@ -174,7 +215,10 @@ export class LiveFeed {
           if (!Array.isArray(p) || p[1] == null || typeof p[3] !== 'number') continue;
           const t = p[0];
           const last = e.rows[e.rows.length - 1];
-          if (last && Math.abs(t - last[0]) < 0.5) continue;
+          if (last) {
+            if (Math.abs(t - last[0]) < 0.5) continue;
+            if (t < last[0] && e.rows.some((r) => Math.abs(r[0] - t) < 0.5)) continue;
+          }
           e.rows.push([
             t,
             p[1],
@@ -184,6 +228,7 @@ export class LiveFeed {
             p[5] ?? null,
             p[6] == null ? null : (p[6] * FT) / 60,
           ]);
+          e._dirty = true;
         }
       }
     }
@@ -193,38 +238,62 @@ export class LiveFeed {
       if (a.lat == null || typeof alt !== 'number') continue;
       const t = this.now - (a.seen_pos ?? 0);
       let e = this.ac.get(a.hex);
-      if (!e) this.ac.set(a.hex, (e = { meta: { hex: a.hex, type: a.t, reg: a.r ?? null, flight: a.flight?.trim() || null }, rows: [] }));
+      if (!e) this.ac.set(a.hex, (e = { meta: { hex: a.hex, type: a.t, reg: a.r ?? null, flight: a.flight?.trim() || null }, rows: [], _dirty: true }));
       const last = e.rows[e.rows.length - 1];
       if (last && Math.abs(t - last[0]) < 0.5) continue;
       e.rows.push([t, a.lat, a.lon, alt * FT, a.gs == null ? null : a.gs * KT, a.track ?? null, rate == null ? null : (rate * FT) / 60]);
+      e._dirty = true;
     }
     for (const [hex, e] of this.ac) {
-      if (e.rows.length > 1) e.rows.sort((a, b) => a[0] - b[0]);
-      e.rows = e.rows.filter((x) => x[0] > this.now - 43200);
+      if (e.rows.length > 1 && e._dirty) e.rows.sort((a, b) => a[0] - b[0]);
+      if (e.rows.length && e.rows[0][0] <= this.now - 43200) {
+        e.rows = e.rows.filter((x) => x[0] > this.now - 43200);
+        e._dirty = true;
+      }
       if (!e.rows.length) this.ac.delete(hex);
     }
-    if (!this.center && this.ac.size) this.lastSince = this.now;
+    if (updateSince && !this.center && this.ac.size) this.lastSince = this.now;
     this.ver++;
     return d;
   }
-
+  _ensureEntry(e) {
+    if (!e._dirty && e._trk !== undefined) return;
+    e._dirty = false;
+    if (!e.rows.length) {
+      e._full = null;
+      e._fr = null;
+      e._trk = null;
+      return;
+    }
+    const r0 = e.rows[0],
+      r1 = e.rows[e.rows.length - 1];
+    const pre = [-180, -135, -90, -45].map((dt) => extrapRow(r0, dt)).filter(Boolean);
+    const post = [45, 90].map((dt) => extrapRow(r1, dt)).filter(Boolean);
+    const rows = [...pre, ...e.rows, ...post];
+    if (rows.length < 2) {
+      e._full = null;
+      e._fr = null;
+      e._trk = null;
+      return;
+    }
+    e._full = { meta: e.meta, rows };
+    const fr = frameAt(rows[0][1], rows[0][2]);
+    e._fr = fr;
+    e._trk = buildTrack(e.meta, rows, fr);
+  }
   tracks() {
     const out = [];
     for (const e of this.ac.values()) {
       if (!e.rows.length) continue;
-      e.rows.sort((a, b) => a[0] - b[0]);
-      const r0 = e.rows[0], r1 = e.rows[e.rows.length - 1];
-      const pre = [-180, -135, -90, -45].map((dt) => extrapRow(r0, dt)).filter(Boolean);
-      const post = [45, 90].map((dt) => extrapRow(r1, dt)).filter(Boolean);
-      const rows = [...pre, ...e.rows, ...post];
-      if (rows.length >= 2) out.push({ meta: e.meta, rows });
+      this._ensureEntry(e);
+      if (e._full) out.push(e._full);
     }
     return out;
   }
-
   window() {
     if (!this.ac.size) return null;
-    let t0 = Infinity, t1 = -Infinity;
+    let t0 = Infinity,
+      t1 = -Infinity;
     for (const e of this.ac.values()) {
       if (!e.rows.length) continue;
       t0 = Math.min(t0, e.rows[0][0] - 180);
@@ -232,43 +301,84 @@ export class LiveFeed {
     }
     return t0 < t1 ? [t0, t1] : null;
   }
-
   tracksNear(lat, lon, rKm, t0, t1) {
     if (!this.ac.size) return [];
-    const dLat = (rKm + 15) / 111, dLon = dLat / Math.max(0.1, Math.cos((lat * Math.PI) / 180));
-    return this.tracks().filter((tr) => tr.rows.some((r) => r[0] >= t0 && r[0] <= t1 && Math.abs(r[1] - lat) <= dLat && Math.abs(r[2] - lon) <= dLon));
+    const dLat = (rKm + 15) / 111,
+      dLon = dLat / Math.max(0.1, Math.cos((lat * Math.PI) / 180));
+    const out = [];
+    for (const e of this.ac.values()) {
+      if (!e.rows.length) continue;
+      if (!e.rows.some((r) => r[0] >= t0 - 90 && r[0] <= t1 + 180 && Math.abs(r[1] - lat) <= dLat && Math.abs(r[2] - lon) <= dLon)) continue;
+      this._ensureEntry(e);
+      if (e._full) out.push(e._full);
+    }
+    return out;
   }
-
-  _ensureIdx() {
+  _ensureBase() {
     if (this._idxVer === this.ver) return;
-    const idx = new Map(), rawBuckets = new Map(), flights = [];
-    const win = this.window(), day0 = win ? Math.floor(win[0] / 86400) * 86400 : 0;
-    for (const t of this.tracks()) {
-      const r0 = t.rows[0], fr = frameAt(r0[1], r0[2]);
-      const trk = buildTrack(t.meta, t.rows, fr);
-      if (!trk) continue;
-      const f = { hex: t.meta.hex, type: t.meta.type, reg: t.meta.reg };
+    const win = this.window(),
+      day0 = win ? Math.floor(win[0] / 86400) * 86400 : 0;
+    const flights = [],
+      trks = [];
+    for (const e of this.ac.values()) {
+      if (!e.rows.length) continue;
+      this._ensureEntry(e);
+      if (!e._trk) continue;
+      const f = { hex: e.meta.hex, type: e.meta.type, reg: e.meta.reg };
       const fi = flights.push(f) - 1;
-      for (let ts = Math.ceil(trk.t0 / 4) * 4; ts <= trk.t1; ts += 4) {
+      trks.push({ fi, f, trk: e._trk, fr: e._fr });
+    }
+    this._flights = flights;
+    this._trks = trks;
+    this._day0 = day0;
+    this._minIdx.clear();
+    this._minRaw.clear();
+    this._idxVer = this.ver;
+  }
+  _ensureMin(min) {
+    this._ensureBase();
+    if (this._minRaw.has(min)) return;
+    const tStart = min * 60,
+      tEnd = tStart + 60,
+      day0 = this._day0;
+    const idxBands = new Map(),
+      rawBands = new Map();
+    for (const { fi, f, trk, fr } of this._trks) {
+      if (trk.t1 < tStart || trk.t0 >= tEnd) continue;
+      const ts0 = Math.max(tStart, Math.ceil(trk.t0 / 4) * 4);
+      const ts1 = Math.min(tEnd - 0.001, trk.t1);
+      for (let ts = ts0; ts <= ts1; ts += 4) {
         const s = trk.state(ts);
         if (!s || s.z > 4000) continue;
         const v = Math.hypot(s.vx, s.vy, s.vz);
         if (v < 15) continue;
-        const lat = fr.lat(s.y), lon = fr.lon(s.x);
-        const k = `${Math.floor(ts / 60)}_${Math.floor(v / 4)}`;
-        let arr = idx.get(k);
-        if (!arr) idx.set(k, (arr = []));
+        const band = Math.floor(v / 4);
+        const lat = fr.lat(s.y),
+          lon = fr.lon(s.x);
+        let arr = idxBands.get(band);
+        if (!arr) idxBands.set(band, (arr = []));
         arr.push({ f, t: ts, lat, lon, z: s.z, ve: s.vx, vn: s.vy, vz: s.vz });
-        let rarr = rawBuckets.get(k);
-        if (!rarr) rawBuckets.set(k, (rarr = []));
-        rarr.push([fi, Math.max(0, Math.round((ts - day0) * 10)), Math.round(lat * 1e6), Math.round(lon * 1e6), Math.round(s.z), Math.round(s.vx * 10), Math.round(s.vy * 10), Math.round(s.vz * 10)]);
+        let rarr = rawBands.get(band);
+        if (!rarr) rawBands.set(band, (rarr = []));
+        rarr.push([
+          fi,
+          Math.max(0, Math.round((ts - day0) * 10)),
+          Math.round(lat * 1e6),
+          Math.round(lon * 1e6),
+          Math.round(s.z),
+          Math.round(s.vx * 10),
+          Math.round(s.vy * 10),
+          Math.round(s.vz * 10),
+        ]);
       }
     }
-    const rawIdx = new Map();
-    for (const [k, rows] of rawBuckets) {
-      const buf = new ArrayBuffer(rows.length * 24), dv = new DataView(buf);
+    const rawMap = new Map();
+    for (const [band, rows] of rawBands) {
+      const buf = new ArrayBuffer(rows.length * 24),
+        dv = new DataView(buf);
       for (let i = 0; i < rows.length; i++) {
-        const o = i * 24, r = rows[i];
+        const o = i * 24,
+          r = rows[i];
         dv.setUint32(o, r[0], true);
         dv.setUint32(o + 4, r[1], true);
         dv.setInt32(o + 8, r[2], true);
@@ -278,29 +388,23 @@ export class LiveFeed {
         dv.setInt16(o + 20, Math.max(-32768, Math.min(32767, r[6])), true);
         dv.setInt16(o + 22, Math.max(-32768, Math.min(32767, r[7])), true);
       }
-      rawIdx.set(k, new Uint8Array(buf));
+      rawMap.set(band, new Uint8Array(buf));
     }
-    this._idxVer = this.ver;
-    this._idx = idx;
-    this._rawIdx = rawIdx;
-    this._flights = flights;
-    this._day0 = day0;
+    this._minIdx.set(min, idxBands);
+    this._minRaw.set(min, rawMap);
   }
-
   shard(min, band) {
     if (!this.ac.size) return [];
-    this._ensureIdx();
-    return this._idx.get(`${min}_${band}`) ?? [];
+    this._ensureMin(min);
+    return this._minIdx.get(min)?.get(band) ?? [];
   }
-
   rawShard(min, band) {
     if (!this.ac.size) return null;
-    this._ensureIdx();
-    const bytes = this._rawIdx.get(`${min}_${band}`);
+    this._ensureMin(min);
+    const bytes = this._minRaw.get(min)?.get(band);
     return bytes ? { bytes, flights: this._flights, day0: this._day0, ver: this.ver } : null;
   }
 }
-
 export const liveFeed = new LiveFeed();
 // Straight-line projection of current positions: who passes within 12 km of `center` in the next 15 minutes.
 export function upcoming(ac, center) {

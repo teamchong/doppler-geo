@@ -432,7 +432,7 @@ fn lookup_pass(
                     if n_valid_h == 0 {
                         continue;
                     }
-
+                    let mut matched_time = false;
                     for dt in [-5.0, 0.0, 5.0] {
                         let st = s_t + dt;
                         let s_lat_dt = s_lat + (vn * dt) / MY;
@@ -455,6 +455,7 @@ fn lookup_pass(
                             if start < s0 - tpad || start > s1 + tpad {
                                 continue;
                             }
+                            matched_time = true;
                             let sides: &[f64] = if h == 0.0 { &[1.0] } else { &[-1.0, 1.0] };
                             for &side in sides {
                                 let lat = s_lat_dt + (side * h * py) / MY;
@@ -481,20 +482,22 @@ fn lookup_pass(
                                     s: state,
                                 };
                                 map.insert_if_new(key, entry);
-                                let dv = (hs - e.v).abs();
-                                let hid = hex_id as usize;
-                                if hid < shortlist.len() && (!shortlist_seen[hid] || dv < shortlist[hid].dv) {
-                                    shortlist_seen[hid] = true;
-                                    shortlist[hid] = OutShortlist {
-                                        fid,
-                                        _pad: pass_idx,
-                                        lat,
-                                        lon,
-                                        start,
-                                        dv,
-                                    };
-                                }
                             }
+                        }
+                    }
+                    if matched_time {
+                        let dv = (hs - e.v).abs();
+                        let hid = hex_id as usize;
+                        if hid < shortlist.len() && (!shortlist_seen[hid] || dv < shortlist[hid].dv) {
+                            shortlist_seen[hid] = true;
+                            shortlist[hid] = OutShortlist {
+                                fid,
+                                _pad: pass_idx,
+                                lat: s_lat,
+                                lon: s_lon,
+                                start: (s_t - e.d / C - e.tc).clamp(s0 - tpad, s1 + tpad),
+                                dv,
+                            };
                         }
                     }
                 }
@@ -502,7 +505,6 @@ fn lookup_pass(
         }
     }
 }
-
 fn refresh_ptrs(arena: &mut Arena) {
     arena.header.samples_ptr = arena.samples.as_ptr() as u32;
     arena.header.shards_ptr = arena.shards.as_ptr() as u32;

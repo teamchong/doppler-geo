@@ -61,8 +61,10 @@ export class SpeedStore {
     this.hexToId = new Map();
     this._liveVer = -1;
     this._liveFidBase = 0;
+    this._liveFidCount = 0;
+    this._liveShards = new Map();
+    this._liveDirty = false;
   }
-
   _registerFlights(list) {
     const fidBase = this.flights.length;
     for (const item of list) {
@@ -135,18 +137,29 @@ export class SpeedStore {
     const liveRaw = liveFeed.rawShard(min, band);
     if (!liveRaw) return baseSh ? [baseSh] : [];
     if (this._liveVer !== liveRaw.ver) {
+      if (this._liveFidCount > 0 && this._liveFidBase + this._liveFidCount === this.flights.length) {
+        this.flights.length = this._liveFidBase;
+        this.fidToHex.length = this._liveFidBase;
+      }
       this._liveFidBase = this._registerFlights(liveRaw.flights);
+      this._liveFidCount = liveRaw.flights.length;
       this._liveVer = liveRaw.ver;
+      this._liveShards.clear();
+      this._liveDirty = true;
     }
-    const liveSh = {
-      bytes: liveRaw.bytes,
-      count: Math.floor(liveRaw.bytes.byteLength / REC),
-      minute: min,
-      band,
-      fidBase: this._liveFidBase,
-      day0: liveRaw.day0,
-      wasmOff: -1,
-    };
+    let liveSh = this._liveShards.get(id);
+    if (!liveSh) {
+      liveSh = {
+        bytes: liveRaw.bytes,
+        count: Math.floor(liveRaw.bytes.byteLength / REC),
+        minute: min,
+        band,
+        fidBase: this._liveFidBase,
+        day0: liveRaw.day0,
+        wasmOff: -1,
+      };
+      this._liveShards.set(id, liveSh);
+    }
     return baseSh ? [baseSh, liveSh] : [liveSh];
   }
 
@@ -206,7 +219,7 @@ async function verify(evs, hits, base, s0, s1) {
     const trks = h.flights.map((f) => tracks.find((t) => t.meta.hex === f.hex)).map((t) => t && buildTrack(t.meta, t.rows, fr));
     if (trks.some((t) => !t)) continue;
     let best = [Infinity];
-    const st0 = s1 - s0 <= 10 ? Math.max(s0, Math.min(s1, h.start)) : h.start;
+    const st0 = s0 != null && s1 != null ? Math.max(s0 - 5, Math.min(s1 + 5, h.start)) : h.start;
     for (let x = -800; x <= 800; x += 200)
       for (let y = -800; y <= 800; y += 200)
         for (const ds of [-3, 0, 3]) {
@@ -268,9 +281,15 @@ let wasmSampleCursor = 0;
 // Returns { kind: 'located' | 'unsure' | 'shortlist' | 'none', results, planes, used }.
 export async function search(events, { s0, s1, base = '', onProgress = () => {} }) {
   if (!events.length) return { kind: 'none', results: [], planes: 0 };
-  if (!base && (!liveFeed.ac.size || Date.now() / 1000 - liveFeed.now > 8)) {
+  if (!base && (!liveFeed.ac.size || Date.now() - liveFeed.lastPollMs > 8000)) {
     try {
       await liveFeed.poll();
+    } catch {}
+  }
+  if (!base && s0 != null && s1 != null) {
+    const maxTc = Math.max(0, ...events.map((e) => e.tc || 0));
+    try {
+      await liveFeed.ensureWindow(s0, s1 + maxTc);
     } catch {}
   }
   let store = stores.get(base);
@@ -296,7 +315,6 @@ export async function search(events, { s0, s1, base = '', onProgress = () => {} 
     s0 = Math.min(...spans.map((s) => s[0]));
     s1 = Math.max(...spans.map((s) => s[1]));
   }
-
   onProgress(0.05);
   const kernel = await getKernel();
 
@@ -331,12 +349,12 @@ export async function search(events, { s0, s1, base = '', onProgress = () => {} 
   }
 
   // If switching stores or arena needs resizing, reset wasmSampleCursor and re-place shards
-  if (activeStoreInWasm !== store) {
+  if (activeStoreInWasm !== store || store._liveDirty) {
     activeStoreInWasm = store;
+    store._liveDirty = false;
     wasmSampleCursor = 0;
     for (const sh of shardList) sh.wasmOff = -1;
   }
-
   let newSamplesNeeded = 0;
   for (const sh of shardList) {
     if (sh.wasmOff < 0) newSamplesNeeded += sh.count;

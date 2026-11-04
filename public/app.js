@@ -193,7 +193,7 @@ function renderSpectrogramFrame() {
 
   // Playhead line if audio player is active within window
   if (player && src !== 'rec' && Number.isFinite(player.currentTime)) {
-    const relT = player.currentTime - (src === 'file' ? clipOffset : 0);
+    const relT = player.currentTime - (src === 'file' ? (a.origin ?? clipOffset) : 0);
     if (relT >= 0 && relT <= dur) {
       const px = (relT / dur) * w;
       ctx.strokeStyle = '#22c55e';
@@ -252,7 +252,7 @@ $('spec').addEventListener('mousemove', (ev) => {
   specHoverPt = { fx, fy };
   if (specState) {
     const { a } = specState;
-    const t = (src === 'file' ? clipOffset : 0) + fx * a.F * a.dt;
+    const t = (src === 'file' ? (a.origin ?? clipOffset) : 0) + fx * a.F * a.dt;
     const hz = Math.round(a.b0 * a.df + (1 - fy) * a.B * a.df);
     $('specHover').textContent = `t = ${hms(t)} · pitch = ${hz} Hz`;
   }
@@ -267,7 +267,7 @@ $('spec').addEventListener('click', (ev) => {
   if (!player || !specState) return;
   const rect = $('spec').getBoundingClientRect();
   const frac = Math.max(0, Math.min(1, (ev.clientX - rect.left) / Math.max(1, rect.width)));
-  player.currentTime = (src === 'file' ? clipOffset : 0) + frac * specState.a.F * specState.a.dt;
+  player.currentTime = (src === 'file' ? (specState.a.origin ?? clipOffset) : 0) + frac * specState.a.F * specState.a.dt;
   player.play?.().catch(() => {});
   renderSpectrogramFrame();
 });
@@ -305,8 +305,14 @@ const OK_Q = 0.008, SHOW = 5;
 let showAll = false;
 const pad = (n) => String(n).padStart(2, '0');
 const hms = (t) => `${pad(Math.floor(t / 3600))}:${pad(Math.floor((t % 3600) / 60))}:${pad(Math.floor(t % 60))}`;
-const when = (d) => (src === 'rec' ? new Date(d.at * 1000).toLocaleTimeString([], { hour12: false }) : hms(d.at));
-
+const when = (d) => {
+  if (src === 'rec') return new Date(d.at * 1000).toLocaleTimeString([], { hour12: false });
+  const ff = src === 'file' ? getFileTimeFilter() : null;
+  if (ff) return `${new Date((ff.t0 + d.at) * 1000).toLocaleTimeString([], { hour12: false })} (${hms(d.at)})`;
+  return hms(d.at);
+};
+const passEpoch = (r, d, k = -1) =>
+  (k >= 0 ? r.heard?.[k] : null) ?? r.start + (src === 'rec' && recStart ? (d ? d.at - recStart : 0) : (d?.at ?? 0));
 // Passes found this session. `at` is epoch seconds for a recording, seconds into the clip for a file.
 // cands: null = flight search pending, [] = no match, else solver results best first.
 let dets = [], src = null, sel = null, pinned = false, player = null, clipOffset = 0, activeSource = 'two', runGen = 0;
@@ -386,6 +392,9 @@ function clearFileControls() {
   if ($('from')) $('from').value = '0:00';
   if ($('to')) $('to').value = '';
   if ($('len')) $('len').textContent = '';
+  if ($('recTime')) $('recTime').value = '';
+  if ($('recTol')) $('recTol').value = '60';
+  if ($('recTimeInfo')) $('recTimeInfo').textContent = 'All indexed times';
   if ($('run')) $('run').disabled = true;
   if ($('clearFile')) $('clearFile').hidden = true;
 }
@@ -432,6 +441,17 @@ function mergeWavClips(clips) {
     return out;
   });
   if (bufs.length === 1) return { x: bufs[0], t0: segs[0].t0 };
+  const firstT0 = segs[0].t0,
+    lastEnd = segs.at(-1).tEnd,
+    spanLen = Math.round((lastEnd - firstT0) * FS);
+  if (spanLen > 0 && spanLen <= 1800 * FS) {
+    const x = new Float32Array(spanLen);
+    for (let i = 0; i < segs.length; i++) {
+      const off = Math.max(0, Math.round((segs[i].t0 - firstT0) * FS));
+      x.set(bufs[i].subarray(0, Math.min(bufs[i].length, spanLen - off)), off);
+    }
+    return { x, t0: firstT0 };
+  }
   const total = bufs.reduce((n, b) => n + b.length, 0),
     x = new Float32Array(total);
   let off = 0;
@@ -439,7 +459,7 @@ function mergeWavClips(clips) {
     x.set(b, off);
     off += b.length;
   }
-  return { x, t0: segs[0].t0 };
+  return { x, t0: firstT0 };
 }
 
 function slicePassWav(wavClip, pts, at, prevWav = null) {
@@ -461,31 +481,52 @@ function slicePassWav(wavClip, pts, at, prevWav = null) {
 
 // Overlapping live windows see the same pass again; keep one entry and take the newer fit.
 function merge(events, origin, spec = null, wavClip = null) {
+  const winEnd = origin + (wavClip?.x?.length ? wavClip.x.length / FS : (spec?.dur ?? 0));
   for (const e of events) {
     const at = origin + e.tc,
-      d = dets.find((d) => Math.abs(d.at - at) < 10 && Math.abs(d.v - e.v) < 0.25 * d.v);
-    const pts = e.pts.map(([t, f]) => [origin + t, f]);
+      pts = e.pts.map(([t, f]) => [origin + t, f]),
+      p0 = pts.length ? pts[0][0] : at - 15,
+      p1 = pts.length ? pts.at(-1)[0] : at + 15;
+    const d = dets.find(
+      (d) =>
+        (Math.abs(d.at - at) < 12 && Math.abs(d.v - e.v) < 0.25 * d.v) ||
+        (src === 'rec' && (d.locked || origin > (d.p0 ?? d.at - 15) - 2) && at >= d.at - 10 && at <= (d.p1 ?? d.at + 20) + 30),
+    );
+    if (!d && src === 'rec' && origin > (recStart ?? origin) + 5 && (e.pts[0]?.[0] ?? 99) < 10 && dets.some((p) => at <= (p.p1 ?? p.at + 20) + 35)) {
+      continue;
+    }
     const prevWav = dets
       .filter((p) => p !== d && p.at < at - 10 && p.wav)
       .sort((a, b) => a.at - b.at)
       .at(-1)?.wav;
     const clip = slicePassWav(wavClip, pts, at, prevWav);
+    const isDone = src === 'rec' && winEnd >= p1 + 20;
     if (d) {
-      const keepSpec = !d.pts?.length || origin <= Math.min(d.pts[0][0], pts[0][0]) - 2;
-      Object.assign(d, {
-        at,
-        v: e.v,
-        d: e.d,
-        f0: e.f0,
-        pts: keepSpec ? pts : d.pts,
-        spec: keepSpec ? (spec ?? d.spec) : (d.spec ?? spec),
-        wav: mergeWavClips([d.wav, clip]),
-      });
+      const keepSpec = !d.locked && (!d.pts?.length || origin <= Math.min(d.p0 ?? d.pts[0][0], p0) - 2);
+      if (keepSpec) {
+        Object.assign(d, {
+          at,
+          v: e.v,
+          d: e.d,
+          f0: e.f0,
+          p0: Math.min(d.p0 ?? p0, p0),
+          p1: Math.max(d.p1 ?? p1, p1),
+          locked: isDone,
+          pts,
+          spec: spec ?? d.spec,
+          wav: mergeWavClips([d.wav, clip]),
+        });
+      } else {
+        d.p1 = Math.max(d.p1 ?? p1, p1);
+        if (isDone) d.locked = true;
+        if (!d.locked) d.wav = mergeWavClips([d.wav, clip]);
+      }
     } else {
-      dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, wav: clip, cands: null });
+      dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, p0, p1, locked: isDone, pts, spec, wav: clip, cands: null });
     }
   }
   dets.sort((p, q) => p.at - q.at);
+  dets.forEach((p, idx) => (p.id = idx + 1));
   const wavCount = dets.filter((d) => d.wav).length;
   if (wavCount) $('save').textContent = `Download .wav (${wavCount === 1 ? '1 pass' : `all ${wavCount} passes`})`;
 }
@@ -559,8 +600,8 @@ function summary(d) {
         .filter((_, k) => k !== d.ixPos)
         .map((op) => `Pass #${dets[op]?.id ?? op + 1}`)
         .join(' & '),
-      tPass = r.heard?.[d.ixPos] ?? (src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start);
-    return `★ Intersects ${otherPasses} → ${label(myFlight)} · Pinpointed near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} (${fmt(tPass)})`;
+      tPass = passEpoch(r, d, d.ixPos);
+    return `★ Intersects ${otherPasses} — ${label(myFlight)} · Pinpointed near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} (${fmt(tPass)})`;
   }
   const pCnt = d.passCnt ?? d.passList?.length ?? d.cands?.length ?? 0;
   if (!pCnt) return 'No matching flight';
@@ -617,8 +658,8 @@ function renderDets() {
           .map((f, k) => {
             const pIdx = d.ix[k],
               pObj = dets[pIdx],
-              tP = r.heard?.[k] ?? (src === 'rec' && recStart && pObj ? r.start + (pObj.at - recStart) : r.start);
-            return `Pass #${pObj?.id ?? pIdx + 1}: ${label(f)} (${fmt(tP)})`;
+            tP = passEpoch(r, pObj, k);
+          return `Pass #${pObj?.id ?? pIdx + 1}: ${label(f)} (${fmt(tP)})`;
           })
           .join('  ∩  ');
         li.onclick = () =>
@@ -667,8 +708,8 @@ function renderDets() {
             const f = r.flights?.[d.ixPos];
             if (f?.hex) ixHexes.add(f.hex);
             const pPath = r.paths?.[d.ixPos];
-            const tPass = r.heard?.[d.ixPos] ?? (src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start);
-            const c = document.createElement('li');
+          const tPass = passEpoch(r, d, d.ixPos);
+          const c = document.createElement('li');
             c.className = 'ix-match';
             c.innerHTML = `<span class="ix-tag"></span> <b></b> <span></span><br><span class="mute"></span>`;
             c.children[0].textContent = `★ Intersects ${otherPasses}${i === 0 ? ' — Pinpointed Spot' : ` (#${i + 1})`}`;
@@ -695,7 +736,7 @@ function renderDets() {
           const c = document.createElement('li');
           c.innerHTML = `<b></b> <span></span> <span class="mute"></span>`;
           c.children[0].textContent = `#${i + 1 + ixHexes.size} ${label(f)}`;
-          const tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
+          const tPass = passEpoch(r, d, -1);
           c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})`;
           c.children[2].textContent = isIx ? `— Pass #${d.id} only (no intersection with ${otherPasses})` : `— Pass #${d.id} candidate`;
           c.onclick = () => {
@@ -725,13 +766,35 @@ function renderDets() {
 
 async function locate(samples, origin, myGen = runGen) {
   busy('Looking for Doppler curves');
-  const workBuf = src === 'rec' ? new Float32Array(samples) : samples;
-  const a = await call('analyze', { samples: workBuf }, [workBuf.buffer]).finally(() => {
+  try {
+    const totalS = samples.length / FS;
+    if (src === 'file' && totalS > 360) {
+      const winLen = WINDOW_S * FS,
+        stepLen = (WINDOW_S - 60) * FS;
+      for (let off = 0; off < samples.length; off += stepLen) {
+        const end = Math.min(samples.length, off + winLen),
+          start = Math.max(0, end - winLen),
+          sub = samples.slice(start, end),
+          subOrigin = origin + start / FS;
+        const a = await call('analyze', { samples: sub }, [sub.buffer]);
+        if (myGen !== runGen) return;
+        a.origin = subOrigin;
+        merge(a.events, subOrigin, a, null);
+        if (a.events.length || !dets.length) drawSpectrogram(a);
+        if (end >= samples.length) break;
+      }
+    } else {
+      const workBuf = src === 'rec' ? new Float32Array(samples) : samples;
+      const a = await call('analyze', { samples: workBuf }, [workBuf.buffer]);
+      if (myGen !== runGen) return;
+      a.origin = origin;
+      merge(a.events, origin, a, src === 'rec' && a.events.length ? { x: samples, t0: origin } : null);
+      if (a.events.length || !dets.length) drawSpectrogram(a);
+    }
+  } finally {
     if (myGen === runGen) busy('');
-  });
+  }
   if (myGen !== runGen) return;
-  merge(a.events, origin, a, src === 'rec' && a.events.length ? { x: samples, t0: origin } : null);
-  if (a.events.length || !dets.length) drawSpectrogram(a);
   const latest = dets[dets.length - 1];
   if (latest && !pinned) pick(latest, false);
   else renderDets();
@@ -739,38 +802,50 @@ async function locate(samples, origin, myGen = runGen) {
     return status(
       src === 'rec'
         ? rec.seconds < 12
-          ? `Live Mic (${rec.seconds.toFixed(0)}s) · Listening · Need about 15 to 30 s of a propeller plane flying past`
-          : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
-        : 'No propeller plane or helicopter pass heard in this audio. Needs a steady propeller or rotor hum (big commercial jets do not work).'
+          ? `Live Mic (${rec.seconds.toFixed(0)}s) — Listening · Need about 15 to 30 s of a propeller plane flying past`
+          : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) — 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
+        : 'No propeller plane or helicopter pass heard in this audio. Needs a steady propeller or rotor hum (big commercial jets do not work).',
     );
   }
   await where(myGen);
 }
 
-// Search the flight index with every pass so far. Recording: start time is known (clock). File: any indexed time.
-let dataBase = '', searched = '', recStart = null;
+// Search the flight index with every pass so far. Recording: start time is known (clock). File: optional time filter or all indexed times.
+let dataBase = '',
+  searched = '',
+  recStart = null;
 async function where(myGen = runGen) {
-  const sig = dets.map((d) => `${d.at.toFixed(1)}:${d.v.toFixed(1)}:${d.pts.length}`).join() + (src === 'rec' ? `:${Math.floor(liveFeed.now / 10)}` : '');
+  if (!dets.length) return;
+  const ff = src === 'file' ? getFileTimeFilter() : null;
+  const filterKey = ff ? `:${Math.round(ff.s0)}_${Math.round(ff.s1)}` : '';
+  const liveFresh = src === 'rec' && (dets.some((d) => d.cands === null) || (liveFeed.now && liveFeed.now - ((dets.at(-1)?.at ?? 0) + (liveFeed.clockOffset || 0)) < 45));
+  const sig = dets.map((d) => `${d.at.toFixed(1)}:${d.v.toFixed(1)}:${d.pts.length}`).join() + (src === 'rec' ? (liveFresh ? `:${Math.floor(liveFeed.now / 10)}` : ':settled') : filterKey);
   if (sig === searched) return;
-  searched = sig;
   const S = src === 'rec' ? recStart : 0,
+    sClock = S + (src === 'rec' ? liveFeed.clockOffset || 0 : 0),
+    s0 = src === 'rec' ? sClock - 10 : ff ? ff.s0 : null,
+    s1 = src === 'rec' ? sClock + 10 : ff ? ff.s1 : null,
     evs = dets.map((d) => ({ v: d.v, d: d.d, tc: d.at - S, pts: d.pts.map(([t, f]) => [t - S, f]) }));
   status(`${dets.length} plane pass${dets.length === 1 ? '' : 'es'} detected. Searching flights...`);
   busy(src === 'rec' ? 'Searching live flights worldwide' : 'Searching flights worldwide');
   let r;
   try {
     r = await search(evs, {
-      s0: src === 'rec' ? s - 2 : null,
-      s1: src === 'rec' ? s + 2 : null,
+      s0,
+      s1,
       base: dataBase,
       onProgress: (p) => {
         if (myGen === runGen) busy(`Searching ${src === 'rec' ? 'live flights' : 'flights'} worldwide (${Math.round(p * 100)}%)`);
       },
     });
+  } catch (e) {
+    searched = '';
+    throw e;
   } finally {
     if (myGen === runGen) busy('');
   }
-  if (myGen !== runGen || sig !== searched) return;
+  if (myGen !== runGen) return;
+  searched = sig;
   for (let i = 0; i < dets.length; i++) {
     const passList = r.passShortlists?.[i] ?? (i === 0 ? r.results : []),
       passCnt = r.passPlanes?.[i] ?? passList.length,
@@ -800,7 +875,6 @@ async function where(myGen = runGen) {
   if (d) pick(d, false);
   onSearched?.(r);
 }
-let onSearched = null;
 
 // Live mic: re-analyze the last 5 minutes every few seconds while recording; Stop just stops.
 const WINDOW_S = 300, EVERY_MS = 3000;
@@ -892,19 +966,137 @@ const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStar
 const parseClock = (v) => (v.trim() === '' ? NaN : v.split(':').reduce((acc, p) => acc * 60 + Number(p), 0));
 const preview = $('preview');
 let currentFile = null;
+
+function toLocalIsoInput(epochSec) {
+  const d = new Date(Math.round(epochSec) * 1000);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function parseFilenameTime(name = '') {
+  const mUtc = name.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})[-:](\d{2})[-:](\d{2})(?:\.\d+)?Z/i);
+  if (mUtc) {
+    const [, Y, M, D, h, m, s] = mUtc;
+    const epoch = Date.UTC(+Y, +M - 1, +D, +h, +m, +s) / 1000;
+    if (Number.isFinite(epoch)) return { epoch, tol: 15, label: `From filename (${h}:${m}:${s} UTC)` };
+  }
+  const mIso = name.match(/(\d{4})-(\d{2})-(\d{2})[T_\s-](\d{2})[-:.](\d{2})(?:[-:.](\d{2}))?/);
+  if (mIso) {
+    const [, Y, M, D, h, m, s = '0'] = mIso;
+    const epoch = new Date(+Y, +M - 1, +D, +h, +m, +s).getTime() / 1000;
+    if (Number.isFinite(epoch)) return { epoch, tol: 60, label: 'From filename' };
+  }
+  const mCmp = name.match(/(?:^|\D)(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_-](\d{2})(\d{2})(\d{2})?(?:\D|$)/);
+  if (mCmp) {
+    const [, Y, M, D, h, m, s = '0'] = mCmp;
+    const epoch = new Date(+Y, +M - 1, +D, +h, +m, +s).getTime() / 1000;
+    if (Number.isFinite(epoch)) return { epoch, tol: 60, label: 'From filename' };
+  }
+  return null;
+}
+
+function detectFileTime(f, dur = 0, forceModified = false) {
+  if (!f) return null;
+  const byName = parseFilenameTime(f.name || '');
+  if (byName) return byName;
+  if (f.lastModified && (forceModified || Math.abs(Date.now() - f.lastModified) < 12 * 3600e3)) {
+    const epoch = Math.round(f.lastModified / 1000 - (Number.isFinite(dur) && dur > 0 ? dur : 0));
+    return { epoch, tol: 120, label: 'From file timestamp' };
+  }
+  return null;
+}
+
+function getFileTimeFilter() {
+  const val = $('recTime')?.value?.trim(),
+    tol = Number($('recTol')?.value ?? 60);
+  if (!val || !(tol > 0)) return null;
+  const t0 = new Date(val).getTime() / 1000;
+  if (!Number.isFinite(t0)) return null;
+  return { t0, tol, s0: t0 - tol, s1: t0 + tol };
+}
+
+function updateTimeFilterInfo(customLabel = null) {
+  const info = $('recTimeInfo');
+  if (!info) return;
+  const ff = getFileTimeFilter();
+  if (!ff) {
+    info.textContent = 'All indexed times';
+    return;
+  }
+  const utcStr = new Date(ff.t0 * 1000).toISOString().slice(11, 19) + ' UTC';
+  info.textContent = customLabel ?? `${utcStr} (±${ff.tol >= 60 ? `${Math.round(ff.tol / 60)}m` : `${ff.tol}s`})`;
+}
+
+function applyDetectedFileTime(f, dur = 0, forceModified = false) {
+  const det = detectFileTime(f, dur, forceModified);
+  if (det && $('recTime')) {
+    $('recTime').value = toLocalIsoInput(det.epoch);
+    if ($('recTol')) {
+      const opts = [...$('recTol').options].map((o) => Number(o.value)).filter((v) => v > 0);
+      const bestTol = opts.find((v) => v >= det.tol) ?? 60;
+      $('recTol').value = String(bestTol);
+    }
+    updateTimeFilterInfo(det.label);
+    return det;
+  }
+  updateTimeFilterInfo();
+  return null;
+}
+
+function onTimeFilterChanged() {
+  updateTimeFilterInfo();
+  if (src === 'file' && dets.length) {
+    renderDets();
+    searched = '';
+    where(runGen).catch((e) => status(e.message));
+  }
+}
+
+if ($('recTime')) $('recTime').onchange = onTimeFilterChanged;
+if ($('recTol')) $('recTol').onchange = onTimeFilterChanged;
+if ($('detectTimeBtn')) {
+  $('detectTimeBtn').onclick = () => {
+    const f = currentFile || $('file')?.files?.[0];
+    const dur = Number.isFinite(preview?.duration) ? preview.duration : 0;
+    const det = applyDetectedFileTime(f, dur, true);
+    if (!det && !f) status('Choose an audio or video file first, or enter a recording time.');
+    if (src === 'file' && dets.length) {
+      renderDets();
+      searched = '';
+      where(runGen).catch((e) => status(e.message));
+    }
+  };
+}
+if ($('clearTimeBtn')) {
+  $('clearTimeBtn').onclick = () => {
+    if ($('recTime')) $('recTime').value = '';
+    updateTimeFilterInfo();
+    if (src === 'file' && dets.length) {
+      renderDets();
+      searched = '';
+      where(runGen).catch((e) => status(e.message));
+    }
+  };
+}
+
 function loadSelectedFile(f) {
   if (!f) return;
-  reset('file');
+  reset('file', 'file');
   currentFile = f;
   $('run').disabled = false;
   if ($('clearFile')) $('clearFile').hidden = false;
   if (preview.src) URL.revokeObjectURL(preview.src);
   preview.hidden = $('range').hidden = false;
   preview.src = URL.createObjectURL(f);
+  const det = applyDetectedFileTime(f, 0, false);
   preview.onloadedmetadata = () => {
-    [$('from').value = '0:00', $('to').value = clock(preview.duration)], showLen();
+    [$('from').value = '0:00', ($('to').value = clock(preview.duration))], showLen();
+    if (!det) applyDetectedFileTime(f, preview.duration, false);
   };
-  status(`Selected "${f.name}". Pick the time window where the plane passes and click Locate File.`);
+  const ff = getFileTimeFilter();
+  status(
+    `Selected "${f.name}"${ff ? ` · Recorded ${new Date(ff.t0 * 1000).toLocaleTimeString([], { hour12: false })} (±${ff.tol}s)` : ''}. Pick the time window where the plane passes and click Locate File.`,
+  );
 }
 $('file').onchange = () => loadSelectedFile($('file').files[0]);
 window.addEventListener('dragenter', (e) => e.preventDefault());
@@ -922,11 +1114,12 @@ window.addEventListener('drop', (e) => {
 });
 $('clearFile').onclick = () => {
   clearFileControls();
-  reset('file');
+  reset('file', 'file');
   status('File cleared. Choose a local audio or video clip where a propeller plane passes.');
 };
 const showLen = () => {
-  const a = parseClock($('from').value), b = parseClock($('to').value);
+  const a = parseClock($('from').value),
+    b = parseClock($('to').value);
   $('len').textContent = b > a ? `${Math.round(b - a)} s` : '';
 };
 $('setFrom').onclick = () => [($('from').value = clock(preview.currentTime)), showLen()];
@@ -941,10 +1134,12 @@ $('run').onclick = async () => {
     busy('Decoding');
     const x = await decodeFile(f);
     const dur = x.length / FS;
+    if (!$('recTime')?.value) applyDetectedFileTime(f, dur, false);
     if (!$('from').value.trim()) $('from').value = '0:00';
     if (!$('to').value.trim()) $('to').value = clock(dur);
     showLen();
-    const a = parseClock($('from').value), b = $('to').value === clock(dur) ? dur : parseClock($('to').value);
+    const a = parseClock($('from').value),
+      b = $('to').value === clock(dur) ? dur : parseClock($('to').value);
     if (!(a >= 0) || !(b > a)) return status('Range must be like 0:05 to 1:00, end after start.');
     if (b - a < Math.min(20, dur)) return status('Pick at least 20 s: the plane must be heard approaching and leaving.');
     // Preserve file input and preview while resetting other sources and map/spectrogram state

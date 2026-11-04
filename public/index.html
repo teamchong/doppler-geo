@@ -693,7 +693,21 @@
     padding: 0 8px;
     cursor: pointer;
   }
-
+  .range .t-dt input {
+    width: auto;
+    min-width: 13.5em;
+    text-align: left;
+    padding: 4px 6px;
+  }
+  .tol-sel {
+    border: 1px solid var(--line-hi);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 500 12px/1.2 var(--mono);
+    padding: 4px 6px;
+    cursor: pointer;
+  }
   footer {
     display: flex;
     flex-wrap: wrap;
@@ -833,6 +847,18 @@
               <span>to</span>
               <span class="t"><input id="to" aria-label="To" autocomplete="off"><button id="setTo" title="Use current playback position">now</button></span>
               <span id="len" class="mute"></span>
+            </div>
+            <div class="range" id="timeFilterRow">
+              <label for="recTime">Recorded</label>
+              <span class="t t-dt"><input type="datetime-local" id="recTime" step="1" aria-label="Recording start time" autocomplete="off" /><button type="button" id="detectTimeBtn" title="Detect time from filename or file timestamp">auto</button><button type="button" id="clearTimeBtn" title="Clear time filter and search all times">any</button></span>
+              <select id="recTol" class="tol-sel" aria-label="Time window tolerance" title="How closely to match the recording time">
+                <option value="15">±15s</option>
+                <option value="60" selected>±1m</option>
+                <option value="300">±5m</option>
+                <option value="1800">±30m</option>
+                <option value="0">All times</option>
+              </select>
+              <span id="recTimeInfo" class="mute small">All indexed times</span>
             </div>
             <div class="row">
               <button class="go" id="run" disabled>Locate File</button>
