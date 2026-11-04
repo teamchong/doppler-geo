@@ -209,6 +209,10 @@ export default {
       }
       return liveStateless(req, ctx);
     }
-    return env.ASSETS.fetch(req);
+    const res = await env.ASSETS.fetch(req);
+    if (res.status === 404 && url.pathname === '/data/days.json') {
+      return json([]);
+    }
+    return res;
   },
 };

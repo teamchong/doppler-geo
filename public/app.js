@@ -409,6 +409,7 @@ function clearFileControls() {
   }
   if ($('file')) $('file').value = '';
   if ($('range')) $('range').hidden = true;
+  if ($('timeFilterRow')) $('timeFilterRow').hidden = true;
   if ($('from')) $('from').value = '0:00';
   if ($('to')) $('to').value = '';
   if ($('len')) $('len').textContent = '';
@@ -747,11 +748,11 @@ function renderDets() {
         }
         const rawPassList = d.passList?.length ? d.passList : d.kind === 'shortlist' ? d.cands : [];
         const baseOtherList = rawPassList.filter((r) => !ixHexes.has(r.flights?.[0]?.hex));
-        const mapZoomed = (map.getZoom?.() ?? 2) >= 6 && map.getCenter && map.getBounds;
-        const mapCenter = mapZoomed ? map.getCenter() : null;
-        const mapBounds = mapZoomed ? map.getBounds() : null;
-        const inViewCnt = mapBounds ? baseOtherList.filter((r) => mapBounds.contains([r.lat, r.lon])).length : 0;
-        const otherList = mapCenter
+        const mapBounds = map.getBounds?.() ?? null;
+        const mapCenter = map.getCenter?.() ?? null;
+        const inViewCnt = mapBounds ? baseOtherList.filter((r) => mapBounds.contains([r.lat, r.lon])).length : baseOtherList.length;
+        const mapZoomed = Boolean(mapBounds && mapCenter && ((map.getZoom?.() ?? 2) >= 4 || inViewCnt < baseOtherList.length));
+        const otherList = mapZoomed
           ? [...baseOtherList].sort((a, b) => {
               const aIn = mapBounds?.contains([a.lat, a.lon]) ? 0 : 1,
                 bIn = mapBounds?.contains([b.lat, b.lon]) ? 0 : 1;
@@ -1117,6 +1118,7 @@ function loadSelectedFile(f) {
   if ($('clearFile')) $('clearFile').hidden = false;
   if (preview.src) URL.revokeObjectURL(preview.src);
   preview.hidden = $('range').hidden = false;
+  if ($('timeFilterRow')) $('timeFilterRow').hidden = false;
   preview.src = URL.createObjectURL(f);
   const det = applyDetectedFileTime(f, 0, false);
   preview.onloadedmetadata = () => {
