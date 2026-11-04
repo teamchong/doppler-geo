@@ -315,8 +315,26 @@ const passEpoch = (r, d, k = -1) =>
   (k >= 0 ? r.heard?.[k] : null) ?? r.start + (src === 'rec' && recStart ? (d ? d.at - recStart : 0) : (d?.at ?? 0));
 // Passes found this session. `at` is epoch seconds for a recording, seconds into the clip for a file.
 // cands: null = flight search pending, [] = no match, else solver results best first.
-let dets = [], src = null, sel = null, pinned = false, player = null, clipOffset = 0, activeSource = 'two', runGen = 0;
-
+const WINDOW_S = 300,
+  EVERY_MS = 3000,
+  preview = $('preview');
+let dets = [],
+  src = null,
+  sel = null,
+  pinned = false,
+  player = null,
+  clipOffset = 0,
+  activeSource = 'two',
+  runGen = 0,
+  dataBase = '',
+  searched = '',
+  recStart = null,
+  onSearched = null,
+  rec = null,
+  tick = null,
+  running = false,
+  saved = null,
+  currentFile = null;
 function updateTelemetry(d) {
   if (!d) {
     $('telF0').textContent = 'Waiting for plane';
@@ -811,9 +829,6 @@ async function locate(samples, origin, myGen = runGen) {
 }
 
 // Search the flight index with every pass so far. Recording: start time is known (clock). File: optional time filter or all indexed times.
-let dataBase = '',
-  searched = '',
-  recStart = null;
 async function where(myGen = runGen) {
   if (!dets.length) return;
   const ff = src === 'file' ? getFileTimeFilter() : null;
@@ -877,8 +892,6 @@ async function where(myGen = runGen) {
 }
 
 // Live mic: re-analyze the last 5 minutes every few seconds while recording; Stop just stops.
-const WINDOW_S = 300, EVERY_MS = 3000;
-let rec = null, tick = null, running = false;
 async function update() {
   if (!rec || running || rec.seconds < 3) return;
   running = true;
@@ -894,7 +907,6 @@ async function update() {
 }
 
 // Saves all detected Doppler pass clips (or the last 5 min fallback) to a local .wav file.
-let saved = null;
 $('save').onclick = () => {
   let clip = mergeWavClips(dets.map((d) => d.wav));
   if (!clip && saved) {
@@ -964,8 +976,6 @@ $('rec').onclick = async () => {
 // Upload: analyze only the chosen part of the clip; time of day is unknown, so search all indexed days.
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 const parseClock = (v) => (v.trim() === '' ? NaN : v.split(':').reduce((acc, p) => acc * 60 + Number(p), 0));
-const preview = $('preview');
-let currentFile = null;
 
 function toLocalIsoInput(epochSec) {
   const d = new Date(Math.round(epochSec) * 1000);
