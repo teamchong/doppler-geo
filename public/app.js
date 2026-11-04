@@ -622,7 +622,7 @@ function summary(d) {
         .map((op) => `Pass #${dets[op]?.id ?? op + 1}`)
         .join(' & '),
       tPass = passEpoch(r, d, d.ixPos);
-    return `★ Intersects ${otherPasses} — ${label(myFlight)} · Pinpointed near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} (${fmt(tPass)})`;
+  return `★ Intersects ${otherPasses} · ${label(myFlight)} · Pinpointed near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} (${fmt(tPass)})`;
   }
   const pCnt = d.passCnt ?? d.passList?.length ?? d.cands?.length ?? 0;
   if (!pCnt) return 'No matching flight';
@@ -661,8 +661,8 @@ function renderDets() {
       title.className = 'ix-title';
       title.textContent =
         d.kind === 'located'
-          ? `Pinpointed Location — Intersection of ${passNames}`
-          : `Closest Intersection — ${passNames} (Approximate)`;
+          ? `Pinpointed Location · Intersection of ${passNames}`
+          : `Closest Intersection · ${passNames} (Approximate)`;
       const pill = document.createElement('span');
       pill.className = 'ix-pill';
       pill.textContent = `${breakdown} → ${d.cands.length} shared spot${d.cands.length === 1 ? '' : 's'}`;
@@ -730,7 +730,7 @@ function renderDets() {
             const c = document.createElement('li');
             c.className = 'ix-match';
             c.innerHTML = `<span class="ix-tag"></span> <b></b> <span></span><br><span class="mute"></span>`;
-            c.children[0].textContent = `★ Intersects ${otherPasses}${i === 0 ? ' — Pinpointed Spot' : ` (#${i + 1})`}`;
+            c.children[0].textContent = `★ Intersects ${otherPasses}${i === 0 ? ' · Pinpointed Spot' : ` (#${i + 1})`}`;
             c.children[1].textContent = label(f);
             c.children[2].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})`;
             const crossInfo = r.flights
@@ -765,7 +765,7 @@ function renderDets() {
           : mapZoomed
             ? inViewCnt > 0
               ? `Showing ${inViewCnt} matching plane${inViewCnt === 1 ? '' : 's'} inside your current map view (out of ${pCnt || d.cands.length} worldwide at this speed), sorted by closest to map center:`
-              : `None of the ${pCnt || d.cands.length} planes at ${Math.round(d.v * 3.6)} km/h were directly inside this map box at ${when(d)} — showing the closest matches to your map center:`
+              : `None of the ${pCnt || d.cands.length} planes at ${Math.round(d.v * 3.6)} km/h were directly inside this map box at ${when(d)}, showing the closest matches to your map center:`
             : `Every plane below was flying at Pass #${d.id}'s speed and distance (${pCnt || d.cands.length} worldwide). Zoom the map to your area to filter by location, or record a 2nd plane to pinpoint:`;
         const showCount = showAll ? otherList.length : Math.max(0, SHOW - (isIx ? Math.min(d.cands.length, 2) : 0));
         otherList.slice(0, showCount).forEach((r, i) => {
@@ -777,7 +777,7 @@ function renderDets() {
           const distKm = mapCenter ? L.latLng(r.lat, r.lon).distanceTo(mapCenter) / 1000 : null;
           const distTag = distKm != null ? ` · ${distKm < 10 ? distKm.toFixed(1) : Math.round(distKm)} km from map center` : '';
           c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})${distTag}`;
-          c.children[2].textContent = isIx ? `— Pass #${d.id} only (no intersection with ${otherPasses})` : `— Pass #${d.id} candidate`;
+          c.children[2].textContent = isIx ? `· Pass #${d.id} only (no intersection with ${otherPasses})` : `· Pass #${d.id} candidate`;
           c.onclick = () => {
             L.circleMarker([r.lat, r.lon], { radius: 5, color: '#38bdf8', weight: 2, fillOpacity: 0.9 })
               .addTo(layer)
@@ -841,8 +841,8 @@ async function locate(samples, origin, myGen = runGen) {
     return status(
       src === 'rec'
         ? rec.seconds < 12
-          ? `Live Mic (${rec.seconds.toFixed(0)}s) — Listening · Need about 15 to 30 s of a propeller plane flying past`
-          : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) — 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
+          ? `Live Mic (${rec.seconds.toFixed(0)}s) · Listening · Need about 15 to 30 s of a propeller plane flying past`
+          : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
         : 'No propeller plane or helicopter pass heard in this audio. Needs a steady propeller or rotor hum (big commercial jets do not work).',
     );
   }
