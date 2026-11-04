@@ -740,16 +740,16 @@
           </div>
           <h3>Analyze a recorded file</h3>
           <p class="desc">Pick an audio or video file from your device where a propeller plane or helicopter flies past. Processed right in your browser and matched against flight tracks.</p>
-          <div class="row">
-            <input type="file" id="file" accept="audio/*,video/*" />
-          </div>
           <div class="source-detail">
+            <div class="row">
+              <input type="file" id="file" accept="audio/*,video/*" autocomplete="off" />
+            </div>
             <video id="preview" controls playsinline hidden></video>
             <div class="range" id="range" hidden>
               <label>Window</label>
-              <span class="t"><input id="from" value="0:00" aria-label="from"><button id="setFrom" title="Use current playback position">now</button></span>
+              <span class="t"><input id="from" value="0:00" aria-label="From" autocomplete="off"><button id="setFrom" title="Use current playback position">now</button></span>
               <span>to</span>
-              <span class="t"><input id="to" aria-label="to"><button id="setTo" title="Use current playback position">now</button></span>
+              <span class="t"><input id="to" aria-label="To" autocomplete="off"><button id="setTo" title="Use current playback position">now</button></span>
               <span id="len" class="mute"></span>
             </div>
             <div class="row">

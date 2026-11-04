@@ -120,9 +120,9 @@ function drawDemoSpectrogram() {
   ctx.beginPath();
   ctx.arc(cx, cy, 4.5 * dpr, 0, Math.PI * 2);
   ctx.fill();
-
+  ctx.fillStyle = '#e6edf7';
+  ctx.font = `600 ${Math.round(11 * dpr)}px ui-monospace, monospace`;
   ctx.fillText('Closest overhead pass (steepest pitch drop gives speed & distance)', cx + 8 * dpr, cy - 8 * dpr);
-  ctx.fillStyle = '#8b9bb4';
   ctx.font = `${Math.round(10.5 * dpr)}px ui-monospace, monospace`;
   ctx.fillText('Approaching plane (higher pitch)', 48 * dpr, cy - 30 * dpr);
   ctx.fillText('Leaving plane (lower pitch)', w - 185 * dpr, cy + 32 * dpr);
@@ -371,8 +371,8 @@ function resetOtherPanels(targetSource) {
   }
   if (targetSource !== 'file') clearFileControls();
 }
-
 function clearFileControls() {
+  currentFile = null;
   const prev = $('preview');
   if (prev) {
     prev.pause();
@@ -380,12 +380,12 @@ function clearFileControls() {
     prev.removeAttribute('src');
     prev.hidden = true;
   }
-  $('range').hidden = true;
-  $('file').value = '';
-  $('from').value = '0:00';
-  $('to').value = '';
-  $('len').textContent = '';
-  $('run').disabled = true;
+  if ($('file')) $('file').value = '';
+  if ($('range')) $('range').hidden = true;
+  if ($('from')) $('from').value = '0:00';
+  if ($('to')) $('to').value = '';
+  if ($('len')) $('len').textContent = '';
+  if ($('run')) $('run').disabled = true;
   if ($('clearFile')) $('clearFile').hidden = true;
 }
 
@@ -436,7 +436,6 @@ function drawCands(d) {
     best.paths.forEach((p, idx) => {
       const trkColor = idx === 0 ? '#38bdf8' : '#a855f7';
       if (p.path?.length >= 2) {
-      if (p.path?.length) {
         L.polyline(p.path, { color: trkColor, weight: 2.5, opacity: 0.85 })
           .addTo(layer)
           .bindTooltip(`Flight Path: ${label(p.flight)}`);
@@ -458,6 +457,9 @@ function drawCands(d) {
         .addTo(layer)
         .bindTooltip(tip);
     }
+    L.circleMarker([r.lat, r.lon], { radius: i ? 5 : 7, color, weight: i ? 1.5 : 2, fillOpacity: 0.45 * conf })
+      .addTo(layer)
+      .bindTooltip(tip);
   });
   const boundsPts =
     d.kind === 'located'
@@ -551,15 +553,13 @@ async function locate(samples, origin, myGen = runGen) {
   if (latest && !pinned) pick(latest, false);
   else renderDets();
   if (!dets.length) {
-    if (!dets.length) {
-      return status(
-        src === 'rec'
-          ? rec.seconds < 12
-            ? `Live Mic (${rec.seconds.toFixed(0)}s) · Listening · Need about 15 to 30s of a propeller plane flying past`
-            : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
-          : 'No propeller plane or helicopter pass heard in this audio. Needs a steady propeller or rotor hum (big commercial jets do not work).'
-      );
-    }
+    return status(
+      src === 'rec'
+        ? rec.seconds < 12
+          ? `Live Mic (${rec.seconds.toFixed(0)}s) · Listening · Need about 15 to 30 s of a propeller plane flying past`
+          : `Live Mic (${rec.seconds.toFixed(0)}s analyzed) · 0 propeller planes heard so far · Keep recording while a propeller plane or helicopter flies past`
+        : 'No propeller plane or helicopter pass heard in this audio. Needs a steady propeller or rotor hum (big commercial jets do not work).'
+    );
   }
   await where(myGen);
 }
@@ -692,35 +692,52 @@ $('rec').onclick = async () => {
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 const parseClock = (v) => (v.trim() === '' ? NaN : v.split(':').reduce((acc, p) => acc * 60 + Number(p), 0));
 const preview = $('preview');
-$('file').onchange = () => {
-  const f = $('file').files[0];
+let currentFile = null;
+function loadSelectedFile(f) {
   if (!f) return;
-  reset('file', '', 'file');
+  reset('file');
+  currentFile = f;
   $('run').disabled = false;
   if ($('clearFile')) $('clearFile').hidden = false;
   if (preview.src) URL.revokeObjectURL(preview.src);
   preview.hidden = $('range').hidden = false;
   preview.src = URL.createObjectURL(f);
-  preview.onloadedmetadata = () => [($('from').value = '0:00'), ($('to').value = clock(preview.duration)), showLen()];
+  preview.onloadedmetadata = () => {
+    [$('from').value = '0:00', $('to').value = clock(preview.duration)], showLen();
+  };
   status(`Selected "${f.name}". Pick the time window where the plane passes and click Locate File.`);
-};
+}
+$('file').onchange = () => loadSelectedFile($('file').files[0]);
+window.addEventListener('dragenter', (e) => e.preventDefault());
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer?.files?.[0];
+  if (!f) return;
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    $('file').files = dt.files;
+  } catch {}
+  loadSelectedFile(f);
+});
 $('clearFile').onclick = () => {
   clearFileControls();
-  reset('file', '', 'file');
-  status('File cleared · Choose a local audio or video clip where a propeller plane passes.');
+  reset('file');
+  status('File cleared. Choose a local audio or video clip where a propeller plane passes.');
 };
 const showLen = () => {
   const a = parseClock($('from').value), b = parseClock($('to').value);
   $('len').textContent = b > a ? `${Math.round(b - a)} s` : '';
 };
-$('setFrom').onclick = () => [(($('from').value = clock(preview.currentTime)), showLen())];
-$('setTo').onclick = () => [(($('to').value = clock(preview.currentTime)), showLen())];
+$('setFrom').onclick = () => [($('from').value = clock(preview.currentTime)), showLen()];
+$('setTo').onclick = () => [($('to').value = clock(preview.currentTime)), showLen()];
 $('from').oninput = $('to').oninput = showLen;
 $('run').onclick = async () => {
-  const f = $('file').files[0];
+  const f = currentFile || $('file').files[0];
   if (!f) return;
   $('run').disabled = true;
-  const myGen = runGen + 1;
+  const myGen = ++runGen;
   try {
     busy('Decoding');
     const x = await decodeFile(f);
@@ -768,19 +785,25 @@ for (const id of Object.keys(EX)) {
     btn.disabled = true;
     const myGen = runGen;
     try {
-      L.circleMarker(ex.truth, { radius: 7, color: '#22c55e', weight: 3, fillOpacity: 0.15 })
-        .addTo(truthLayer)
-        .bindTooltip('Actual Recording Location', { permanent: true, direction: 'right' });
-      const top = r.results[0];
-      const km = top && L.latLng(top.lat, top.lon).distanceTo(ex.truth) / 1000;
-      const inList = r.results.some((c) => c.flights.some((f) => ex.regs.includes(f.reg)));
-      ans.textContent = `Actual location: ${ex.what}. ` + (
-        r.kind === 'located'
-          ? `Estimated location is ${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`} away.`
-          : r.kind === 'shortlist'
-          ? `${ex.regs[0]} is ${inList ? 'included' : 'not'} in the ${r.results.length} possible planes worldwide.`
-          : 'Not found.'
-      );
+      busy('Decoding');
+      const x = await decodeFile(await (await fetch($(`exa-${id}`).src)).blob());
+      if (myGen !== runGen) return;
+      player = $(`exa-${id}`);
+      onSearched = (r) => {
+        L.circleMarker(ex.truth, { radius: 7, color: '#22c55e', weight: 3, fillOpacity: 0.15 })
+          .addTo(truthLayer)
+          .bindTooltip('Actual Recording Location', { permanent: true, direction: 'right' });
+        const top = r.results[0];
+        const km = top && L.latLng(top.lat, top.lon).distanceTo(ex.truth) / 1000;
+        const inList = r.results.some((c) => c.flights.some((f) => ex.regs.includes(f.reg)));
+        ans.textContent =
+          `Actual location: ${ex.what}. ` +
+          (r.kind === 'located'
+            ? `Estimated location is ${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`} away.`
+            : r.kind === 'shortlist'
+            ? `${ex.regs[0]} is ${inList ? 'included' : 'not'} in the ${r.results.length} possible planes worldwide.`
+            : 'Not found.');
+        ans.hidden = false;
         if (r.kind !== 'located') map.setView(ex.truth, 9);
       };
       await locate(x, 0, myGen);
