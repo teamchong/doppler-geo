@@ -724,11 +724,11 @@
           <span class="ex-meta">Worldwide Live ADS-B</span>
         </div>
           <h3>Record a propeller plane overhead</h3>
-          <p class="desc">Step outside or open a window and record 30 to 90 seconds while a propeller plane or helicopter flies past (jets like A380s have broadband exhaust roar, not a steady blade tone). Checks live every 3s.</p>
+          <p class="desc">Step outside or open a window and record 30 to 90 seconds while a propeller plane or helicopter flies past. Checks live every 3s; .wav download saves 5 min from the first detected pass.</p>
           <div class="row">
             <button class="go" id="rec">Start Recording</button>
             <span id="recT" class="mute" style="font-family:var(--mono)"></span>
-            <button id="save" class="chip-btn" hidden>Download .wav</button>
+            <button id="save" class="chip-btn" hidden>Download .wav (last 5m)</button>
           </div>
         </div>
 
@@ -753,6 +753,7 @@
           </div>
           <div class="row">
             <button class="go" id="run" disabled>Locate File</button>
+            <button type="button" class="chip-btn" id="clearFile" hidden>Clear / Reset</button>
           </div>
         </div>
       </div>

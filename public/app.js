@@ -371,22 +371,24 @@ function resetOtherPanels(targetSource) {
       }
     }
   }
-  // Reset local file preview and range controls if switching away from file
-  if (targetSource !== 'file') {
-    const prev = $('preview');
-    if (prev) {
-      prev.pause();
-      if (prev.src) URL.revokeObjectURL(prev.src);
-      prev.removeAttribute('src');
-      prev.hidden = true;
-    }
-    $('range').hidden = true;
-    $('file').value = '';
-    $('from').value = '0:00';
-    $('to').value = '';
-    $('len').textContent = '';
-    $('run').disabled = true;
+  if (targetSource !== 'file') clearFileControls();
+}
+
+function clearFileControls() {
+  const prev = $('preview');
+  if (prev) {
+    prev.pause();
+    if (prev.src) URL.revokeObjectURL(prev.src);
+    prev.removeAttribute('src');
+    prev.hidden = true;
   }
+  $('range').hidden = true;
+  $('file').value = '';
+  $('from').value = '0:00';
+  $('to').value = '';
+  $('len').textContent = '';
+  $('run').disabled = true;
+  if ($('clearFile')) $('clearFile').hidden = true;
 }
 
 function reset(kind, base = '', targetSource = kind) {
@@ -413,10 +415,11 @@ function merge(events, origin, spec = null, wavClip = null) {
     const at = origin + e.tc,
       d = dets.find((d) => Math.abs(d.at - at) < 10 && Math.abs(d.v - e.v) < 0.25 * d.v);
     const pts = e.pts.map(([t, f]) => [origin + t, f]);
-    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts, spec: spec ?? d.spec, wav: wavClip ?? d.wav });
+    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts, spec: spec ?? d.spec, wav: d.wav ?? wavClip });
     else dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, wav: wavClip, cands: null });
   }
   dets.sort((p, q) => p.at - q.at);
+  if (dets.some((d) => d.wav)) $('save').textContent = 'Download .wav (5m from 1st pass)';
 }
 
 function drawCands(d) {
@@ -619,7 +622,7 @@ async function update() {
 // Saves the last 5 min (what the detector saw, at FS) to a local file. Nothing is uploaded.
 let saved = null;
 $('save').onclick = () => {
-  const passWav = dets.find((d) => d.id === sel)?.wav ?? dets.at(-1)?.wav;
+  const passWav = dets[0]?.wav ?? dets.find((d) => d.id === sel)?.wav;
   let clip = passWav;
   if (!clip && saved) {
     const { x, offset } = saved.samples();
@@ -656,6 +659,7 @@ $('rec').onclick = async () => {
   }
   reset('rec', '', 'rec');
   $('save').hidden = true;
+  $('save').textContent = 'Download .wav (last 5m)';
   rec = new Recorder();
   try {
     await rec.start();
@@ -693,11 +697,17 @@ $('file').onchange = () => {
   if (!f) return;
   reset('file', '', 'file');
   $('run').disabled = false;
+  if ($('clearFile')) $('clearFile').hidden = false;
   if (preview.src) URL.revokeObjectURL(preview.src);
   preview.hidden = $('range').hidden = false;
   preview.src = URL.createObjectURL(f);
   preview.onloadedmetadata = () => [($('from').value = '0:00'), ($('to').value = clock(preview.duration)), showLen()];
   status(`Selected "${f.name}". Pick the time window where the plane passes and click Locate File.`);
+};
+$('clearFile').onclick = () => {
+  clearFileControls();
+  reset('file', '', 'file');
+  status('File cleared · Choose a local audio or video clip where a propeller plane passes.');
 };
 const showLen = () => {
   const a = parseClock($('from').value), b = parseClock($('to').value);
