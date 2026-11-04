@@ -323,12 +323,13 @@ function updateTelemetry(d) {
   $('telV').textContent = `${Math.round(d.v * 3.6)} km/h (${d.v.toFixed(1)} m/s)`;
   $('telD').textContent = `${Math.round(d.d)} m`;
   if (d.cands == null) $('telFit').textContent = 'Searching...';
-  else if (!d.cands.length) $('telFit').textContent = 'No match';
-  else if (d.kind === 'shortlist') $('telFit').textContent = `${d.cands.length} possible planes`;
-  else {
-    const best = d.cands[0];
-    $('telFit').textContent = `${d.cands.length} spot${d.cands.length === 1 ? '' : 's'} (${dets.length} plane${dets.length === 1 ? '' : 's'})`;
-  }
+  else if (d.ixPos >= 0 && d.cands.length) {
+    const used = d.used ?? dets.length;
+    $('telFit').textContent = `${d.cands.length} spot${d.cands.length === 1 ? '' : 's'} (${used} plane${used === 1 ? '' : 's'})`;
+  } else if (d.passCnt || d.cands.length) {
+    const cnt = d.passCnt || d.cands.length;
+    $('telFit').textContent = `${cnt} possible plane${cnt === 1 ? '' : 's'}`;
+  } else $('telFit').textContent = 'No match';
 }
 
 // Highlight the active source card and reset all other panels (audio, mic recording, file input, answer banners).
@@ -407,51 +408,123 @@ function reset(kind, base = '', targetSource = kind) {
   renderDets();
 }
 
+function mergeWavClips(clips) {
+  const valid = clips.filter((c) => c?.x?.length).sort((a, b) => a.t0 - b.t0 || b.x.length - a.x.length);
+  if (!valid.length) return null;
+  const segs = [];
+  for (const c of valid) {
+    const cEnd = c.t0 + c.x.length / FS,
+      last = segs.at(-1);
+    if (!last || c.t0 > last.tEnd + 0.05) segs.push({ t0: c.t0, tEnd: cEnd, parts: [c] });
+    else if (cEnd > last.tEnd) {
+      last.tEnd = cEnd;
+      last.parts.push(c);
+    }
+  }
+  const bufs = segs.map((s) => {
+    if (s.parts.length === 1) return s.parts[0].x;
+    const len = Math.round((s.tEnd - s.t0) * FS),
+      out = new Float32Array(len);
+    for (const p of s.parts) {
+      const off = Math.max(0, Math.round((p.t0 - s.t0) * FS));
+      out.set(p.x.subarray(0, Math.min(p.x.length, len - off)), off);
+    }
+    return out;
+  });
+  if (bufs.length === 1) return { x: bufs[0], t0: segs[0].t0 };
+  const total = bufs.reduce((n, b) => n + b.length, 0),
+    x = new Float32Array(total);
+  let off = 0;
+  for (const b of bufs) {
+    x.set(b, off);
+    off += b.length;
+  }
+  return { x, t0: segs[0].t0 };
+}
+
+function slicePassWav(wavClip, pts, at, prevWav = null) {
+  if (!wavClip?.x?.length) return null;
+  const { x, t0 } = wavClip,
+    dur = x.length / FS;
+  const p0 = pts.length ? pts[0][0] : at - 20,
+    p1 = pts.length ? pts.at(-1)[0] : at + 20;
+  let startT = Math.max(t0, Math.min(p0 - 15, at - 30));
+  const endT = Math.min(t0 + dur, Math.max(p1 + 15, at + 30));
+  if (prevWav?.x?.length) {
+    const prevEnd = prevWav.t0 + prevWav.x.length / FS;
+    if (prevEnd >= t0 && prevEnd < startT) startT = prevEnd;
+  }
+  const i0 = Math.max(0, Math.floor((startT - t0) * FS)),
+    i1 = Math.min(x.length, Math.ceil((endT - t0) * FS));
+  return i1 > i0 ? { x: x.slice(i0, i1), t0: t0 + i0 / FS } : null;
+}
+
 // Overlapping live windows see the same pass again; keep one entry and take the newer fit.
 function merge(events, origin, spec = null, wavClip = null) {
   for (const e of events) {
     const at = origin + e.tc,
       d = dets.find((d) => Math.abs(d.at - at) < 10 && Math.abs(d.v - e.v) < 0.25 * d.v);
     const pts = e.pts.map(([t, f]) => [origin + t, f]);
-    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts, spec: spec ?? d.spec, wav: d.wav ?? wavClip });
-    else dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, wav: wavClip, cands: null });
+    const prevWav = dets
+      .filter((p) => p !== d && p.at < at - 10 && p.wav)
+      .sort((a, b) => a.at - b.at)
+      .at(-1)?.wav;
+    const clip = slicePassWav(wavClip, pts, at, prevWav);
+    if (d) {
+      const keepSpec = !d.pts?.length || origin <= Math.min(d.pts[0][0], pts[0][0]) - 2;
+      Object.assign(d, {
+        at,
+        v: e.v,
+        d: e.d,
+        f0: e.f0,
+        pts: keepSpec ? pts : d.pts,
+        spec: keepSpec ? (spec ?? d.spec) : (d.spec ?? spec),
+        wav: mergeWavClips([d.wav, clip]),
+      });
+    } else {
+      dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, wav: clip, cands: null });
+    }
   }
   dets.sort((p, q) => p.at - q.at);
-  if (dets.some((d) => d.wav)) $('save').textContent = 'Download .wav (5m from 1st pass)';
+  const wavCount = dets.filter((d) => d.wav).length;
+  if (wavCount) $('save').textContent = `Download .wav (${wavCount === 1 ? '1 pass' : `all ${wavCount} passes`})`;
 }
 
 function drawCands(d) {
   layer.clearLayers();
-  if (!d?.cands?.length) return;
-  if (d.kind === 'shortlist') {
-    for (const r of d.cands)
+  if (!d?.cands?.length && !d?.passList?.length) return;
+  if (d.kind === 'shortlist' || (d.ixPos < 0 && d.passList?.length)) {
+    const list = d.passList?.length ? d.passList : d.cands;
+    for (const r of list)
       L.circleMarker([r.lat, r.lon], { radius: 3.5, color: '#38bdf8', weight: 1, fillOpacity: 0.7 })
         .addTo(layer)
-        .bindTooltip(r.flights.map(label).join(' + '));
-    return map.fitBounds(L.latLngBounds(d.cands.map((r) => [r.lat, r.lon])), { padding: [24, 24] });
+        .bindTooltip(`Pass #${d.id} candidate: ${r.flights.map(label).join(' + ')}`);
+    return map.fitBounds(L.latLngBounds(list.map((r) => [r.lat, r.lon])), { padding: [24, 24] });
   }
+  if (!d.cands?.length) return;
   const best = d.cands[0];
   // Draw ADS-B trajectories and CPA vectors for the top candidate
   if (best.paths?.length) {
     best.paths.forEach((p, idx) => {
       const trkColor = idx === 0 ? '#38bdf8' : '#a855f7';
+      const passNum = d.ix?.[idx] != null ? dets[d.ix[idx]]?.id ?? d.ix[idx] + 1 : idx + 1;
       if (p.path?.length >= 2) {
         L.polyline(p.path, { color: trkColor, weight: 2.5, opacity: 0.85 })
           .addTo(layer)
-          .bindTooltip(`Flight Path: ${label(p.flight)}`);
+          .bindTooltip(`Pass #${passNum} Flight Path: ${label(p.flight)}`);
       }
       if (p.cpa) {
         L.polyline([p.cpa, [best.lat, best.lon]], { color: trkColor, weight: 1.5, dashArray: '4 5', opacity: 0.75 }).addTo(layer);
         L.circleMarker(p.cpa, { radius: 4, color: trkColor, weight: 1.5, fillOpacity: 0.9 })
           .addTo(layer)
-          .bindTooltip(`Closest Point Overhead: ${label(p.flight)}`);
+          .bindTooltip(`Pass #${passNum} Closest Point Overhead: ${label(p.flight)}`);
       }
     });
   }
   d.cands.forEach((r, i) => {
     const conf = Math.max(0.15, Math.min(1, best.q / r.q));
     const color = i ? '#64748b' : '#f59e0b';
-    const tip = `#${i + 1}: ${r.flights.map(label).join(' + ')}`;
+    const tip = `Pinpointed Intersection #${i + 1}: ${r.flights.map((f, k) => `Pass #${d.ix?.[k] != null ? dets[d.ix[k]]?.id ?? d.ix[k] + 1 : k + 1} ${label(f)}`).join(' ∩ ')}`;
     if (r.hull?.length) {
       L.polygon(r.hull, { color, weight: i ? 1 : 2, fillOpacity: 0.25 * conf })
         .addTo(layer)
@@ -478,59 +551,169 @@ function pick(d, byUser) {
 }
 
 function summary(d) {
-  if (d.cands == null) return 'searching flights...';
-  if (!d.cands.length) return 'no matching flight';
-  if (d.kind === 'shortlist') return `${d.cands.length} possible planes worldwide could have made this. A 2nd plane pins it down.`;
-  const r = d.cands[0];
-  const more = d.cands.length - 1;
-  const tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
-  return `Best match: near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} on ${fmt(tPass)}${more ? ` (${more} other possible spot${more > 1 ? 's' : ''})` : ''}`;
+  if (d.cands === null) return 'Searching flights...';
+  if (d.ixPos >= 0 && d.cands?.length) {
+    const r = d.cands[0],
+      myFlight = r.flights?.[d.ixPos],
+      otherPasses = (d.ix ?? [])
+        .filter((_, k) => k !== d.ixPos)
+        .map((op) => `Pass #${dets[op]?.id ?? op + 1}`)
+        .join(' & '),
+      tPass = r.heard?.[d.ixPos] ?? (src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start);
+    return `★ Intersects ${otherPasses} → ${label(myFlight)} · Pinpointed near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} (${fmt(tPass)})`;
+  }
+  const pCnt = d.passCnt ?? d.passList?.length ?? d.cands?.length ?? 0;
+  if (!pCnt) return 'No matching flight';
+  return `${pCnt} possible plane${pCnt === 1 ? '' : 's'} worldwide (1 pass alone cannot pinpoint a spot)`;
 }
 
 function renderDets() {
   $('dets').hidden = !dets.length;
   const badge = $('detBadge');
+  const d = dets.find((x) => x.id === sel) ?? dets.at(-1);
   if (badge) {
-    const d = dets.find((x) => x.id === sel) ?? dets.at(-1);
-    badge.textContent = !d || d.cands == null ? 'Searching' : d.kind === 'located' ? `Located (${d.cands.length})` : d.kind === 'shortlist' ? `${d.cands.length} Possible Planes` : d.kind === 'unsure' ? 'Closest Matches' : 'No Match';
+    badge.textContent =
+      !d || d.cands === null
+        ? 'Searching'
+        : d.kind === 'located'
+          ? `Pinpointed (${d.cands.length} Spot${d.cands.length === 1 ? '' : 's'})`
+          : d.kind === 'shortlist'
+            ? `1 Pass (${d.passCnt || d.cands.length} Possible Planes)`
+            : d.kind === 'unsure'
+              ? `Closest Intersection (${d.cands.length})`
+              : 'No Match';
+  }
+  const ixBox = $('ixBox');
+  if (ixBox) {
+    const hasIx = d && d.cands?.length > 0 && (d.kind === 'located' || d.kind === 'unsure') && (d.ix?.length ?? 0) >= 2;
+    ixBox.hidden = !hasIx;
+    if (hasIx) {
+      ixBox.className = d.kind === 'located' ? 'ix-box' : 'ix-box unsure';
+      const passNames = d.ix.map((idx) => `Pass #${dets[idx]?.id ?? idx + 1}`).join(' ∩ ');
+      const breakdown = d.ix
+        .map((idx) => `Pass #${dets[idx]?.id ?? idx + 1} (${dets[idx]?.passCnt ?? dets[idx]?.passList?.length ?? '?'} planes)`)
+        .join(' ∩ ');
+      const head = document.createElement('div');
+      head.className = 'ix-head';
+      const title = document.createElement('div');
+      title.className = 'ix-title';
+      title.textContent =
+        d.kind === 'located'
+          ? `Pinpointed Location — Intersection of ${passNames}`
+          : `Closest Intersection — ${passNames} (Approximate)`;
+      const pill = document.createElement('span');
+      pill.className = 'ix-pill';
+      pill.textContent = `${breakdown} → ${d.cands.length} shared spot${d.cands.length === 1 ? '' : 's'}`;
+      head.append(title, pill);
+      const ixOl = document.createElement('ol');
+      ixOl.className = 'ix-list';
+      const best = d.cands[0];
+      d.cands.slice(0, SHOW).forEach((r, i) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<b></b> <span></span><br><span class="mute"></span>`;
+        li.children[0].textContent = `#${i + 1} (${strength(r, best)})`;
+        li.children[1].textContent = `Pinpointed spot near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}`;
+        li.children[3].textContent = r.flights
+          .map((f, k) => {
+            const pIdx = d.ix[k],
+              pObj = dets[pIdx],
+              tP = r.heard?.[k] ?? (src === 'rec' && recStart && pObj ? r.start + (pObj.at - recStart) : r.start);
+            return `Pass #${pObj?.id ?? pIdx + 1}: ${label(f)} (${fmt(tP)})`;
+          })
+          .join('  ∩  ');
+        li.onclick = () =>
+          map.fitBounds(L.latLngBounds([...r.hull, ...(r.paths?.flatMap((p) => p.path ?? []) ?? [])]), {
+            maxZoom: 14,
+            padding: [32, 32],
+          });
+        ixOl.append(li);
+      });
+      ixBox.replaceChildren(head, ixOl);
+    } else {
+      ixBox.replaceChildren();
+    }
   }
   const ol = $('detList');
   ol.replaceChildren(
-    ...[...dets].reverse().map((d) => {
+    ...dets.map((d) => {
       const li = document.createElement('li');
       li.className = d.id === sel ? 'open' : '';
       const head = document.createElement('button');
       head.className = 'det';
-      head.innerHTML = `<time></time><span class="mute"></span><span class="sum"></span>`;
-      head.children[0].textContent = when(d);
-      head.children[1].textContent = `plane at ${Math.round(d.v * 3.6)} km/h, ${Math.round(d.d)} m away at closest`;
+      const isIx = d.ixPos >= 0 && d.cands?.length > 0;
+      head.innerHTML = `<time></time><span class="mute"></span><span class="${isIx ? 'sum ix' : 'sum'}"></span>`;
+      head.children[0].textContent = `Pass #${d.id} · ${when(d)}`;
+      const pCnt = d.passCnt ?? d.passList?.length;
+      head.children[1].textContent = `${Math.round(d.v * 3.6)} km/h, ${Math.round(d.d)} m away${pCnt != null ? ` · ${pCnt} plane${pCnt === 1 ? '' : 's'}` : ''}`;
       head.children[2].textContent = summary(d);
       head.onclick = () => pick(d, true);
       li.append(head);
-      if (d.id === sel && d.cands?.length) {
-        const sub = document.createElement('ol'),
-          best = d.cands[0];
+      if (d.id === sel && (d.cands?.length || d.passList?.length)) {
+        const sub = document.createElement('ol');
         const note = document.createElement('p');
         note.className = 'mute small';
-        note.textContent =
-          d.kind === 'shortlist'
-            ? 'Every plane below was flying at this speed and height at this moment. With one plane, they all fit equally well.'
-            : 'Ranked by how closely the rise and fall of the engine pitch in the audio matches what these planes would have sounded like from that spot.';
-        const list = showAll ? d.cands : d.cands.slice(0, SHOW);
-        list.forEach((r, i) => {
+        const otherPasses = isIx
+          ? (d.ix ?? [])
+              .filter((_, k) => k !== d.ixPos)
+              .map((op) => `Pass #${dets[op]?.id ?? op + 1}`)
+              .join(' & ')
+          : '';
+        note.textContent = isIx
+          ? `Pass #${d.id} matched ${pCnt || d.cands.length} flights worldwide on its own. The highlighted flight below crossed paths with ${otherPasses} at the same spot:`
+          : `Every plane below was flying at Pass #${d.id}'s speed and distance (${pCnt || d.cands.length} worldwide). With 1 pass alone they all fit equally well; a 2nd pass narrows it to the intersection:`;
+        const ixHexes = new Set();
+        if (isIx) {
+          d.cands.slice(0, SHOW).forEach((r, i) => {
+            const f = r.flights?.[d.ixPos];
+            if (f?.hex) ixHexes.add(f.hex);
+            const pPath = r.paths?.[d.ixPos];
+            const tPass = r.heard?.[d.ixPos] ?? (src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start);
+            const c = document.createElement('li');
+            c.className = 'ix-match';
+            c.innerHTML = `<span class="ix-tag"></span> <b></b> <span></span><br><span class="mute"></span>`;
+            c.children[0].textContent = `★ Intersects ${otherPasses}${i === 0 ? ' — Pinpointed Spot' : ` (#${i + 1})`}`;
+            c.children[1].textContent = label(f);
+            c.children[2].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})`;
+            const crossInfo = r.flights
+              .map((of, k) => (k === d.ixPos ? null : `Pass #${dets[d.ix[k]]?.id ?? d.ix[k] + 1}: ${label(of)}`))
+              .filter(Boolean)
+              .join(' · ');
+            c.children[4].textContent = `Crosses ${crossInfo} (${strength(r, d.cands[0])})`;
+            c.onclick = () =>
+              map.fitBounds(L.latLngBounds([...r.hull, ...(pPath?.path ?? r.paths?.flatMap((p) => p.path ?? []) ?? [])]), {
+                maxZoom: 14,
+                padding: [32, 32],
+              });
+            sub.append(c);
+          });
+        }
+        const rawPassList = d.passList?.length ? d.passList : d.kind === 'shortlist' ? d.cands : [];
+        const otherList = rawPassList.filter((r) => !ixHexes.has(r.flights?.[0]?.hex));
+        const showCount = showAll ? otherList.length : Math.max(0, SHOW - (isIx ? Math.min(d.cands.length, 2) : 0));
+        otherList.slice(0, showCount).forEach((r, i) => {
+          const f = r.flights?.[0];
           const c = document.createElement('li');
-          c.innerHTML = `<b></b> <span></span><br><span class="mute"></span>`;
+          c.innerHTML = `<b></b> <span></span> <span class="mute"></span>`;
+          c.children[0].textContent = `#${i + 1 + ixHexes.size} ${label(f)}`;
           const tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
-          c.children[0].textContent = `#${i + 1} (${strength(r, best)})`;
-          c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}, ${fmt(tPass)}`;
-          c.onclick = () => map.fitBounds(L.latLngBounds([...r.hull, ...(r.paths?.flatMap((p) => p.path ?? []) ?? [])]), { maxZoom: 14, padding: [32, 32] });
+          c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})`;
+          c.children[2].textContent = isIx ? `— Pass #${d.id} only (no intersection with ${otherPasses})` : `— Pass #${d.id} candidate`;
+          c.onclick = () => {
+            L.circleMarker([r.lat, r.lon], { radius: 5, color: '#38bdf8', weight: 2, fillOpacity: 0.9 })
+              .addTo(layer)
+              .bindTooltip(`Pass #${d.id} candidate: ${label(f)}`)
+              .openTooltip();
+            map.fitBounds(L.latLngBounds(r.hull), { maxZoom: 12, padding: [32, 32] });
+          };
           sub.append(c);
         });
         li.append(note, sub);
-        if (d.cands.length > SHOW) {
+        if (otherList.length > Math.max(0, SHOW - (isIx ? Math.min(d.cands.length, 2) : 0))) {
           const b = document.createElement('button');
           b.className = 'link';
-          b.textContent = showAll ? 'Show fewer' : `Show ${d.cands.length - SHOW} more`;
+          b.textContent = showAll
+            ? 'Show fewer'
+            : `Show ${otherList.length - showCount} more Pass #${d.id} single-pass candidates`;
           b.onclick = () => ((showAll = !showAll), renderDets());
           li.append(b);
         }
@@ -588,10 +771,27 @@ async function where(myGen = runGen) {
     if (myGen === runGen) busy('');
   }
   if (myGen !== runGen || sig !== searched) return;
-  for (const d of dets) Object.assign(d, { cands: r.results, kind: r.kind, used: r.used });
+  for (let i = 0; i < dets.length; i++) {
+    const passList = r.passShortlists?.[i] ?? (i === 0 ? r.results : []),
+      passCnt = r.passPlanes?.[i] ?? passList.length,
+      ixPos = (r.kind === 'located' || r.kind === 'unsure') && r.ix ? r.ix.indexOf(i) : -1;
+    Object.assign(dets[i], {
+      cands: r.results,
+      kind: r.kind,
+      used: r.used,
+      ix: r.ix ?? [0],
+      ixPos,
+      passList,
+      passCnt,
+    });
+  }
+  const ixDesc =
+    (r.kind === 'located' || r.kind === 'unsure') && r.ix?.length >= 2
+      ? r.ix.map((idx) => `Pass #${dets[idx]?.id ?? idx + 1} (${r.passPlanes?.[idx] ?? '?'} planes)`).join(' ∩ ')
+      : '';
   const msg = {
-    located: `Pinpointed from ${r.used} plane passes. Best location is ${r.results.length > 1 ? `${(r.results[1].q / r.results[0].q).toFixed(1)}x better than the next` : 'a unique match'}.`,
-    unsure: `${dets.length} plane passes heard, but no single location fits all of them well. Showing the closest matches.`,
+    located: `Pinpointed from ${ixDesc || `${r.used} plane passes`}. Best location is ${r.results.length > 1 ? `${(r.results[1].q / r.results[0].q).toFixed(1)}x better than the next` : 'a unique match'}.`,
+    unsure: `${dets.length} plane passes heard (${ixDesc}), but no single location fits all of them well. Showing the closest intersection.`,
     shortlist: `1 plane heard: ${r.planes} flights worldwide were flying at this speed and distance. Record a 2nd plane at the same spot to pinpoint your location.`,
     none: 'No matching flight found. The plane may not have had its flight tracker on, or that day is not in the database.',
   }[r.kind];
@@ -619,16 +819,15 @@ async function update() {
   }
 }
 
-// Saves the last 5 min (what the detector saw, at FS) to a local file. Nothing is uploaded.
+// Saves all detected Doppler pass clips (or the last 5 min fallback) to a local .wav file.
 let saved = null;
 $('save').onclick = () => {
-  const passWav = dets[0]?.wav ?? dets.find((d) => d.id === sel)?.wav;
-  let clip = passWav;
+  let clip = mergeWavClips(dets.map((d) => d.wav));
   if (!clip && saved) {
     const { x, offset } = saved.samples();
     clip = { x, t0: saved.t0 + offset };
   }
-  if (!clip) return;
+  if (!clip?.x?.length) return;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(wav(clip.x));
   a.download = `recording-${new Date(clip.t0 * 1000).toISOString().slice(0, 19).replace(/:/g, '-') }Z.wav`;

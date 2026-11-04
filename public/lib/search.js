@@ -471,6 +471,24 @@ export async function search(events, { s0, s1, base = '', onProgress = () => {} 
       if (hitsBySet[setIdx]) hitsBySet[setIdx].push({ lat, lon, start, pre, flights });
     }
   }
+  // Read per-pass OutShortlist structs directly from wasm.memory before async verification
+  const passShortlists = Array.from({ length: pCnt }, () => []);
+  if (numShortlist > 0) {
+    const slU32 = new Uint32Array(outBuf, outShortlistPtr, numShortlist * 10);
+    const slF64 = new Float64Array(outBuf, outShortlistPtr, numShortlist * 5);
+    for (let i = 0; i < numShortlist; i++) {
+      const fid = slU32[i * 10],
+        pIdx = slU32[i * 10 + 1];
+      const lat = slF64[i * 5 + 1],
+        lon = slF64[i * 5 + 2],
+        start = slF64[i * 5 + 3],
+        dv = slF64[i * 5 + 4];
+      const f = store.flights[fid];
+      if (f && passShortlists[pIdx])
+        passShortlists[pIdx].push({ lat, lon, start, flights: [f], hull: circle(lat, lon, 300), q: null, score: 1, unheard: 0, dv });
+    }
+  }
+  const passPlanes = passShortlists.map((l) => l.length);
 
   // Verify each pass set; prefer more passes unless fewer fit clearly better.
   let best = null;
@@ -490,24 +508,10 @@ export async function search(events, { s0, s1, base = '', onProgress = () => {} 
       top = results[0],
       second = results[1];
     if (top.q < OK_Q || (top.q < 0.012 && (!second || top.q < second.q * 0.85)))
-      return { kind: 'located', results: results.filter((r) => r.q < Math.max(OK_Q * 2, top.q * 2)), used: ix.length };
-    return { kind: 'unsure', results, used: ix.length };
+      return { kind: 'located', results: results.filter((r) => r.q < Math.max(OK_Q * 2, top.q * 2)), used: ix.length, ix, passShortlists, passPlanes };
+    return { kind: 'unsure', results, used: ix.length, ix, passShortlists, passPlanes };
   }
 
-  // Read OutShortlist structs directly from wasm.memory
-  const results = [];
-  if (numShortlist > 0) {
-    const slU32 = new Uint32Array(outBuf, outShortlistPtr, numShortlist * 10);
-    const slF64 = new Float64Array(outBuf, outShortlistPtr, numShortlist * 5);
-    for (let i = 0; i < numShortlist; i++) {
-      const fid = slU32[i * 10];
-      const lat = slF64[i * 5 + 1],
-        lon = slF64[i * 5 + 2],
-        start = slF64[i * 5 + 3],
-        dv = slF64[i * 5 + 4];
-      const f = store.flights[fid];
-      if (f) results.push({ lat, lon, start, flights: [f], hull: circle(lat, lon, 300), q: null, score: 1, unheard: 0, dv });
-    }
-  }
-  return { kind: results.length ? 'shortlist' : 'none', results, planes: results.length, used: 1 };
+  const results = passShortlists[0] ?? [];
+  return { kind: results.length ? 'shortlist' : 'none', results, planes: results.length, used: 1, ix: [0], passShortlists, passPlanes };
 }

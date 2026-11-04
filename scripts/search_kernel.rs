@@ -373,7 +373,7 @@ fn lookup_pass(
     e: &PassDesc,
     s0: f64,
     s1: f64,
-    is_pass0: bool,
+    pass_idx: u32,
     shortlist: &mut [OutShortlist],
     shortlist_seen: &mut [bool],
 ) {
@@ -481,20 +481,18 @@ fn lookup_pass(
                                     s: state,
                                 };
                                 map.insert_if_new(key, entry);
-                                if is_pass0 {
-                                    let dv = (hs - e.v).abs();
-                                    let hid = hex_id as usize;
-                                    if hid < shortlist.len() && (!shortlist_seen[hid] || dv < shortlist[hid].dv) {
-                                        shortlist_seen[hid] = true;
-                                        shortlist[hid] = OutShortlist {
-                                            fid,
-                                            _pad: 0,
-                                            lat,
-                                            lon,
-                                            start,
-                                            dv,
-                                        };
-                                    }
+                                let dv = (hs - e.v).abs();
+                                let hid = hex_id as usize;
+                                if hid < shortlist.len() && (!shortlist_seen[hid] || dv < shortlist[hid].dv) {
+                                    shortlist_seen[hid] = true;
+                                    shortlist[hid] = OutShortlist {
+                                        fid,
+                                        _pad: pass_idx,
+                                        lat,
+                                        lon,
+                                        start,
+                                        dv,
+                                    };
                                 }
                             }
                         }
@@ -549,10 +547,13 @@ pub extern "C" fn init_arena(max_samples: usize, max_shards: usize, max_fids: us
                     },
                 );
             }
+            let max_sl = max_fids.saturating_mul(MAX_PASSES);
             if arena.fid_to_hex.len() < max_fids {
                 arena.fid_to_hex.resize(max_fids, 0);
+            }
+            if arena.out_shortlist.len() < max_sl {
                 arena.out_shortlist.resize(
-                    max_fids,
+                    max_sl,
                     OutShortlist {
                         fid: 0,
                         _pad: 0,
@@ -627,7 +628,7 @@ pub extern "C" fn init_arena(max_samples: usize, max_shards: usize, max_fids: us
             start: 0.0,
             dv: 0.0,
         };
-        max_fids
+        max_fids.saturating_mul(MAX_PASSES)
     ];
     let maps = (0..MAX_PASSES).map(|_| CellMap::with_capacity(18, 65536)).collect();
 
@@ -718,20 +719,23 @@ pub extern "C" fn run_search() {
         }
     }
 
-    let mut shortlist = vec![
-        OutShortlist {
-            fid: 0,
-            _pad: 0,
-            lat: 0.0,
-            lon: 0.0,
-            start: 0.0,
-            dv: f64::INFINITY,
-        };
-        num_hexes
-    ];
-    let mut shortlist_seen = vec![false; num_hexes];
+        let mut shortlists: Vec<Vec<OutShortlist>> = (0..p_cnt)
+            .map(|p| {
+                vec![
+                    OutShortlist {
+                        fid: 0,
+                        _pad: p as u32,
+                        lat: 0.0,
+                        lon: 0.0,
+                        start: 0.0,
+                        dv: f64::INFINITY,
+                    };
+                    num_hexes
+                ]
+            })
+    .collect();
+    let mut shortlist_seen: Vec<Vec<bool>> = (0..p_cnt).map(|_| vec![false; num_hexes]).collect();
     let mut set_hits: Vec<Vec<Combo>> = (0..sets.len()).map(|_| Vec::new()).collect();
-
     const CH: f64 = 600.0;
     for sp in spans {
         let mut a = sp.sp0;
@@ -747,9 +751,9 @@ pub extern "C" fn run_search() {
                     &passes[p],
                     a,
                     b,
-                    p == 0,
-                    &mut shortlist,
-                    &mut shortlist_seen,
+                    p as u32,
+                    &mut shortlists[p],
+                    &mut shortlist_seen[p],
                 );
             }
 
@@ -984,16 +988,24 @@ pub extern "C" fn run_search() {
         }
     }
 
-    let mut sl_vec: Vec<OutShortlist> = shortlist
-        .into_iter()
-        .enumerate()
-        .filter(|&(i, _)| shortlist_seen[i])
-        .map(|(_, v)| v)
-        .collect();
-    sl_vec.sort_by(|a, b| a.dv.partial_cmp(&b.dv).unwrap_or(std::cmp::Ordering::Equal));
-    let sl_write = sl_vec.len().min(arena.out_shortlist.len());
-    arena.out_shortlist[..sl_write].copy_from_slice(&sl_vec[..sl_write]);
-
+        let mut sl_write = 0usize;
+        let max_sl = arena.out_shortlist.len();
+        for p in 0..p_cnt {
+            let seen = &shortlist_seen[p];
+            let mut sl_vec: Vec<OutShortlist> = shortlists[p]
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|&(i, _)| seen[i])
+                .map(|(_, v)| v)
+                .collect();
+            sl_vec.sort_by(|a, b| a.dv.partial_cmp(&b.dv).unwrap_or(std::cmp::Ordering::Equal));
+            let take = sl_vec.len().min(max_sl.saturating_sub(sl_write));
+            if take > 0 {
+                arena.out_shortlist[sl_write..sl_write + take].copy_from_slice(&sl_vec[..take]);
+                sl_write += take;
+            }
+        }
     arena.header.out_hits_count = hit_write as u32;
     arena.header.out_shortlist_count = sl_write as u32;
 }

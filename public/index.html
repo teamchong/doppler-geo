@@ -506,12 +506,75 @@
   }
 
   /* Detections & Candidate List */
+  .ix-box {
+    margin: 2px 0 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(34, 197, 94, 0.45);
+    background: rgba(34, 197, 94, 0.06);
+  }
+  .ix-box.unsure {
+    border-color: rgba(245, 158, 11, 0.45);
+    background: rgba(245, 158, 11, 0.06);
+  }
+  .ix-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .ix-title {
+    font: 600 13px/1.3 var(--sans);
+    color: #fff;
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .ix-pill {
+    font: 600 11px/1.2 var(--mono);
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--ok-glow);
+    border: 1px solid rgba(34, 197, 94, 0.5);
+    color: #86efac;
+  }
+  .ix-box.unsure .ix-pill {
+    background: var(--amber-glow);
+    border-color: rgba(245, 158, 11, 0.5);
+    color: #fde68a;
+  }
+  .ix-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    font-size: 13px;
+  }
+  .ix-list li {
+    cursor: pointer;
+    margin: 5px 0 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    background: var(--surface-2);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .ix-list li:hover { border-color: var(--ok); background: var(--surface-3); }
+  .ix-list li b { font-family: var(--mono); color: #86efac; }
+  .ix-box.unsure .ix-list li { border-color: rgba(245, 158, 11, 0.4); }
+  .ix-box.unsure .ix-list li:hover { border-color: var(--amber); }
+  .ix-box.unsure .ix-list li b { color: var(--amber); }
   #detList { list-style: none; margin: 0; padding: 0; }
   #detList > li { border-top: 1px solid var(--line); padding: 4px 0; }
   #detList > li:first-child { border-top: 0; }
   .det {
     display: grid;
-    grid-template-columns: 6em 12.5em 1fr;
+    grid-template-columns: 9.5em 13.5em 1fr;
     gap: 12px;
     align-items: baseline;
     width: 100%;
@@ -527,8 +590,10 @@
   .det:hover { background: var(--surface-2); }
   .det time { font: 600 12.5px/1.2 var(--mono); color: var(--amber); font-variant-numeric: tabular-nums; }
   .det .sum { font: 500 12.5px/1.2 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+  .det .sum.ix { color: #86efac; }
   #detList > li.open .det { background: var(--surface-2); }
   #detList > li.open .det .sum { color: var(--acc); }
+  #detList > li.open .det .sum.ix { color: #86efac; }
   #detList > li ol {
     list-style: none;
     margin: 4px 0 10px;
@@ -549,6 +614,23 @@
   }
   #detList > li ol li:hover { border-color: var(--acc); background: var(--surface-3); }
   #detList > li ol li b { font-family: var(--mono); color: var(--acc); }
+  #detList > li ol li.ix-match {
+    border-color: rgba(34, 197, 94, 0.5);
+    background: rgba(34, 197, 94, 0.08);
+  }
+  #detList > li ol li.ix-match:hover {
+    border-color: var(--ok);
+    background: rgba(34, 197, 94, 0.14);
+  }
+  #detList > li ol li.ix-match b { color: #fff; }
+  .ix-tag {
+    font: 600 11px/1.2 var(--mono);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--ok-glow);
+    border: 1px solid rgba(34, 197, 94, 0.45);
+    color: #86efac;
+  }
   #detList > li > p, #detList > li > .link { margin: 4px 0 6px 1em; }
   .link {
     background: none;
@@ -639,7 +721,7 @@
     .privacy-note { text-align: left; }
     .source-grid { grid-template-columns: 1fr; }
     .telem-strip { grid-template-columns: repeat(2, 1fr); }
-    .det { grid-template-columns: 5.5em 1fr; }
+    .det { grid-template-columns: 9em 1fr; }
     .det .sum { grid-column: 1 / -1; }
   }
 </style>
@@ -820,6 +902,7 @@
         <h2>Detected Plane Passes &amp; Possible Locations <span class="sec-badge" id="detBadge">Solved</span></h2>
         <span class="mute small">Click a plane pass to jump audio · Click a location to zoom map</span>
       </div>
+      <div id="ixBox" class="ix-box" hidden></div>
       <ol id="detList"></ol>
     </section>
 
