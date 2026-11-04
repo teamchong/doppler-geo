@@ -18,7 +18,8 @@
     "update:types": "node scripts/prop-types.mjs",
     "update:example": "node scripts/build-example.mjs test/fixtures/kampina-slice.json public/examples/2025-07-18",
     "update:data": "node scripts/prop-types.mjs && node scripts/build-example.mjs test/fixtures/kampina-slice.json public/examples/2025-07-18",
-    "index:day": "node scripts/build-index.mjs"
+    "index:day": "node scripts/build-index.mjs",
+    "build:wasm": "rustc --target wasm32-unknown-unknown -C opt-level=3 -C lto=fat -C panic=abort -C strip=symbols -A static_mut_refs --crate-type cdylib scripts/search_kernel.rs -o public/lib/search_kernel.wasm"
   },
   "devDependencies": {
     "cf": "1.0.0-beta.27",

@@ -239,30 +239,65 @@ export class LiveFeed {
     return this.tracks().filter((tr) => tr.rows.some((r) => r[0] >= t0 && r[0] <= t1 && Math.abs(r[1] - lat) <= dLat && Math.abs(r[2] - lon) <= dLon));
   }
 
+  _ensureIdx() {
+    if (this._idxVer === this.ver) return;
+    const idx = new Map(), rawBuckets = new Map(), flights = [];
+    const win = this.window(), day0 = win ? Math.floor(win[0] / 86400) * 86400 : 0;
+    for (const t of this.tracks()) {
+      const r0 = t.rows[0], fr = frameAt(r0[1], r0[2]);
+      const trk = buildTrack(t.meta, t.rows, fr);
+      if (!trk) continue;
+      const f = { hex: t.meta.hex, type: t.meta.type, reg: t.meta.reg };
+      const fi = flights.push(f) - 1;
+      for (let ts = Math.ceil(trk.t0 / 4) * 4; ts <= trk.t1; ts += 4) {
+        const s = trk.state(ts);
+        if (!s || s.z > 4000) continue;
+        const v = Math.hypot(s.vx, s.vy, s.vz);
+        if (v < 15) continue;
+        const lat = fr.lat(s.y), lon = fr.lon(s.x);
+        const k = `${Math.floor(ts / 60)}_${Math.floor(v / 4)}`;
+        let arr = idx.get(k);
+        if (!arr) idx.set(k, (arr = []));
+        arr.push({ f, t: ts, lat, lon, z: s.z, ve: s.vx, vn: s.vy, vz: s.vz });
+        let rarr = rawBuckets.get(k);
+        if (!rarr) rawBuckets.set(k, (rarr = []));
+        rarr.push([fi, Math.max(0, Math.round((ts - day0) * 10)), Math.round(lat * 1e6), Math.round(lon * 1e6), Math.round(s.z), Math.round(s.vx * 10), Math.round(s.vy * 10), Math.round(s.vz * 10)]);
+      }
+    }
+    const rawIdx = new Map();
+    for (const [k, rows] of rawBuckets) {
+      const buf = new ArrayBuffer(rows.length * 24), dv = new DataView(buf);
+      for (let i = 0; i < rows.length; i++) {
+        const o = i * 24, r = rows[i];
+        dv.setUint32(o, r[0], true);
+        dv.setUint32(o + 4, r[1], true);
+        dv.setInt32(o + 8, r[2], true);
+        dv.setInt32(o + 12, r[3], true);
+        dv.setInt16(o + 16, Math.max(-32768, Math.min(32767, r[4])), true);
+        dv.setInt16(o + 18, Math.max(-32768, Math.min(32767, r[5])), true);
+        dv.setInt16(o + 20, Math.max(-32768, Math.min(32767, r[6])), true);
+        dv.setInt16(o + 22, Math.max(-32768, Math.min(32767, r[7])), true);
+      }
+      rawIdx.set(k, new Uint8Array(buf));
+    }
+    this._idxVer = this.ver;
+    this._idx = idx;
+    this._rawIdx = rawIdx;
+    this._flights = flights;
+    this._day0 = day0;
+  }
+
   shard(min, band) {
     if (!this.ac.size) return [];
-    if (this._idxVer !== this._ver) {
-      const idx = new Map();
-      for (const t of this.tracks()) {
-        const r0 = t.rows[0], fr = frameAt(r0[1], r0[2]);
-        const trk = buildTrack(t.meta, t.rows, fr);
-        if (!trk) continue;
-        const f = { hex: t.meta.hex, type: t.meta.type, reg: t.meta.reg };
-        for (let ts = Math.ceil(trk.t0 / 4) * 4; ts <= trk.t1; ts += 4) {
-          const s = trk.state(ts);
-          if (!s || s.z > 4000) continue;
-          const v = Math.hypot(s.vx, s.vy, s.vz);
-          if (v < 15) continue;
-          const k = `${Math.floor(ts / 60)}_${Math.floor(v / 4)}`;
-          let arr = idx.get(k);
-          if (!arr) idx.set(k, (arr = []));
-          arr.push({ f, t: ts, lat: fr.lat(s.y), lon: fr.lon(s.x), z: s.z, ve: s.vx, vn: s.vy, vz: s.vz });
-        }
-      }
-      this._idxVer = this._ver;
-      this._idx = idx;
-    }
+    this._ensureIdx();
     return this._idx.get(`${min}_${band}`) ?? [];
+  }
+
+  rawShard(min, band) {
+    if (!this.ac.size) return null;
+    this._ensureIdx();
+    const bytes = this._rawIdx.get(`${min}_${band}`);
+    return bytes ? { bytes, flights: this._flights, day0: this._day0, ver: this.ver } : null;
   }
 }
 

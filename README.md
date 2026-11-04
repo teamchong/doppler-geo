@@ -48,7 +48,7 @@ We built `doppler-geo` to test how well acoustic aircraft geolocation actually w
 * **Dual Data Sources:**
   * **Rolling 60-minute worldwide feed (`/api/live` + `LiveTrackerDO`):** A singleton Cloudflare Durable Object (`LiveTrackerDO` in `worker/index.js`) wakes every 20 seconds via `alarm()`, polls worldwide airborne piston/turboprop/helicopter traffic from [adsb.lol](https://adsb.lol) (`public/prop-types.json`, 2,302 ICAO type designators ordered with active types first), and checkpoints a rolling 60-minute trajectory buffer in SQLite storage. Visitors opening the page immediately receive the full multi-point track history and subsequent delta updates (`?since=<ts>`).
   * **Historical daily index (`data/spd/{day}.bin`, `data/day/{day}.bin`):** Pre-indexed UTC day shards bucket aircraft state samples by `(UTC minute, 4 m/s speed band)` for fast HTTP `Range` lookup, alongside $1^\circ \times 1^\circ$ gzipped trajectory tiles.
-* **Subset & Pair Intersection:** With 2 or more detected passes, `search()` evaluates all passes, drop-one subsets, and pass pairs so a single spurious noise curve never vetoes a real multi-plane match.
+* **Zero-Copy Rust WASM Kernel (`public/lib/search_kernel.wasm`, `scripts/search_kernel.rs`):** Decompressed 24-byte `SpdSample` shard buffers (`[fi, t_ds, lat_e6, lon_e6, z, ve_dm, vn_dm, vz_dm]`) are placed directly into `wasm.memory` with zero JS object deserialization. A single cross-boundary call (`run_search()`) executes candidate projection (`lookup`), spatial-temporal cell intersection across all pass subsets (`join`), and 3D linear Doppler pre-ranking (`lin_score`), returning only the top deduplicated survivors for 3D spline verification.
 
 ### 3. Retarded-Time Trajectory Verification (`public/lib/solver.js`, `public/lib/physics.js`)
 * **3D Hermite Spline Tracks (`buildTrack`):** Raw ADS-B points are outlier-filtered and interpolated into smooth 3D local tangent-plane position and velocity trajectories.
@@ -81,6 +81,7 @@ npm run dev
 | `npm run update:types` | Fetch latest piston/turboprop ICAO type designators (`scripts/prop-types.mjs`) with active types prioritized first |
 | `npm run update:example` | Rebuild `public/examples/2025-07-18/data` from `test/fixtures/kampina-slice.json` |
 | `npm run index:day -- YYYY-MM-DD` | Stream an `adsb.lol` daily readsb tarball from `stdin` into `public/data/` and update `public/data/days.json` |
+| `npm run build:wasm` | Recompile `scripts/search_kernel.rs` to `public/lib/search_kernel.wasm` (`wasm32-unknown-unknown`) |
 | `npm run deploy` | Deploy Worker, static assets, and `LiveTrackerDO` migration to Cloudflare (`*.workers.dev` by default, or custom domain if `CF_DOMAIN` is set) |
 
 ### Deploying Your Own Instance (Zero Hardcode)
@@ -119,7 +120,8 @@ npm run dev
 | `public/lib/spectro.js` | STFT spectrogram, two-stage whitening, harmonic masking, Viterbi ridge extraction, and 1D Doppler curve fitting |
 | `public/lib/physics.js` | 3D Hermite track interpolation (`buildTrack`), retarded-time Doppler solver (`retardedK`), and `nelderMead` optimizer |
 | `public/lib/solver.js` | Multi-pass candidate generation, retarded-time scoring, and unanswered-flight penalty (`unheard`) |
-| `public/lib/search.js` | Worldwide speed-index lookup (`SpeedStore`), multi-pass subset join, and retarded-time verification |
+| `public/lib/search.js` | Worldwide speed-index loader (`SpeedStore`), zero-copy WASM arena bridge, and 3D retarded-time verification |
+| `public/lib/search_kernel.wasm` | Precompiled Rust `wasm32` kernel for zero-serialization `SpdSample` lookup, multi-pass join, and pre-ranking |
 | `public/lib/data.js` | HTTP `Range` gzipped shard loader (`loadHistory`), rolling worldwide `LiveFeed` client, and track extrapolation |
 | `public/lib/media.js` | Browser audio/video decoding, $4000\text{ Hz}$ anti-alias FIR decimation, `AudioWorklet` mic capture, and `.wav` export |
 | `public/lib/geo.js` | Local tangent-plane (`frameAt`) and great-circle distance helpers |
@@ -130,6 +132,7 @@ npm run dev
 | `scripts/build-index.mjs` | Streaming tar reader that builds `day/{day}.bin`, `idx/{day}.json`, `spd/{day}.bin`, and `days.json` from `adsb.lol` tarballs |
 | `scripts/build-example.mjs` | Builds the bundled example index under `public/examples/2025-07-18/data` |
 | `scripts/prop-types.mjs` | Regenerates `public/prop-types.json` from `tar1090-db` aircraft type definitions and active traffic |
+| `scripts/search_kernel.rs` | Rust source for `public/lib/search_kernel.wasm` (shared `IOHeader` linear memory arena + single-call `run_search()`) |
 | `test/detector.mjs` | Spectrogram & pass-detector recall benchmark on 20 simulated 2-plane spots |
 | `test/e2e.mjs` | End-to-end solver test on the bundled simulated and real Kampina field recordings |
 | `test/batch.mjs` | End-to-end batch accuracy benchmark across 20 simulated 2-plane spots against the worldwide slice |
