@@ -408,13 +408,13 @@ function reset(kind, base = '', targetSource = kind) {
 }
 
 // Overlapping live windows see the same pass again; keep one entry and take the newer fit.
-function merge(events, origin, spec = null) {
+function merge(events, origin, spec = null, wavClip = null) {
   for (const e of events) {
     const at = origin + e.tc,
       d = dets.find((d) => Math.abs(d.at - at) < 10 && Math.abs(d.v - e.v) < 0.25 * d.v);
     const pts = e.pts.map(([t, f]) => [origin + t, f]);
-    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts, spec: spec ?? d.spec });
-    else dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, cands: null });
+    if (d) Object.assign(d, { at, v: e.v, d: e.d, f0: e.f0, pts, spec: spec ?? d.spec, wav: wavClip ?? d.wav });
+    else dets.push({ id: dets.length + 1, at, v: e.v, d: e.d, f0: e.f0, pts, spec, wav: wavClip, cands: null });
   }
   dets.sort((p, q) => p.at - q.at);
 }
@@ -479,8 +479,9 @@ function summary(d) {
   if (!d.cands.length) return 'no matching flight';
   if (d.kind === 'shortlist') return `${d.cands.length} planes worldwide could have made this. A 2nd plane pins it down`;
   const r = d.cands[0],
-    more = d.cands.length - 1;
-  return `Best guess: near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} on ${fmt(r.start)}${more ? `, ${more} other possibilit${more > 1 ? 'ies' : 'y'}` : ''}`;
+    more = d.cands.length - 1,
+    tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
+  return `Best guess: near ${r.lat.toFixed(3)}, ${r.lon.toFixed(3)} on ${fmt(tPass)}${more ? `, ${more} other possibilit${more > 1 ? 'ies' : 'y'}` : ''}`;
 }
 
 function renderDets() {
@@ -516,9 +517,9 @@ function renderDets() {
         list.forEach((r, i) => {
           const c = document.createElement('li');
           c.innerHTML = `<b></b> <span></span><br><span class="mute"></span>`;
+          const tPass = src === 'rec' && recStart ? r.start + (d.at - recStart) : r.start;
           c.children[0].textContent = `#${i + 1} (${strength(r, best)})`;
-          c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}, ${fmt(r.start)}`;
-          c.children[3].textContent = `${r.flights.length > 1 ? 'Planes' : 'Plane'}: ${r.flights.map(label).join(', ')}${r.unheard ? `. Less likely: ${r.unheard} other plane${r.unheard > 1 ? 's' : ''} flew close here and should have been heard` : ''}`;
+          c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}, ${fmt(tPass)}`;
           c.onclick = () => map.fitBounds(L.latLngBounds([...r.hull, ...(r.paths?.flatMap((p) => p.path ?? []) ?? [])]), { maxZoom: 14, padding: [32, 32] });
           sub.append(c);
         });
@@ -538,11 +539,12 @@ function renderDets() {
 
 async function locate(samples, origin, myGen = runGen) {
   busy('Looking for Doppler curves');
-  const a = await call('analyze', { samples }, [samples.buffer]).finally(() => {
+  const workBuf = src === 'rec' ? new Float32Array(samples) : samples;
+  const a = await call('analyze', { samples: workBuf }, [workBuf.buffer]).finally(() => {
     if (myGen === runGen) busy('');
   });
   if (myGen !== runGen) return;
-  merge(a.events, origin, a);
+  merge(a.events, origin, a, src === 'rec' && a.events.length ? { x: samples, t0: origin } : null);
   if (a.events.length || !dets.length) drawSpectrogram(a);
   const latest = dets[dets.length - 1];
   if (latest && !pinned) pick(latest, false);
@@ -617,10 +619,16 @@ async function update() {
 // Saves the last 5 min (what the detector saw, at FS) to a local file. Nothing is uploaded.
 let saved = null;
 $('save').onclick = () => {
-  if (!saved) return;
+  const passWav = dets.find((d) => d.id === sel)?.wav ?? dets.at(-1)?.wav;
+  let clip = passWav;
+  if (!clip && saved) {
+    const { x, offset } = saved.samples();
+    clip = { x, t0: saved.t0 + offset };
+  }
+  if (!clip) return;
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(wav(saved.samples().x));
-  a.download = `recording-${new Date(saved.t0 * 1000).toISOString().slice(0, 19).replace(/:/g, '-') }Z.wav`;
+  a.href = URL.createObjectURL(wav(clip.x));
+  a.download = `recording-${new Date(clip.t0 * 1000).toISOString().slice(0, 19).replace(/:/g, '-') }Z.wav`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
