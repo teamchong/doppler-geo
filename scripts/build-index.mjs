@@ -1,9 +1,8 @@
 // adsb.lol readsb tarball (stdin) -> prop-only day index.
-// out/day/DATE.bin: gzipped NDJSON chunk per 1 degree tile, out/idx/DATE.json: tile -> [offset, length, points].
-// Line: {h, t, r, c: [t, lat, lon, alt, gs, trk, vr]} columns of ints. t (0.1 s since midnight), lat/lon (1e-4 deg)
-// and alt (m) are delta coded; gs and vr in 0.1 m/s, trk in deg, null when missing.
+// out/day/DATE.bin: gzipped capnstruct TrackBundle (LiveTrackHeader + LiveTrackPoint) chunk per 1 degree tile,
+// out/idx/DATE.json: tile -> [offset, length, points].
 // out/spd/DATE.bin + DATE.json: speed index. Every prop flight sampled every 4 s, sharded by (minute of day, 4 m/s speed band),
-// so a detected pass only fetches the few shards matching its speed and time. Record: see SPD_REC.
+// so a detected pass only fetches the few shards matching its speed and time. Record: 24-byte SpdSample (#[repr(C)]).
 // Usage: cat v2026.11.01-planes-readsb-prod-0.tar.* | node scripts/build-index.mjs 2026-11-01 out
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,11 +10,15 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { buildTrack } from '../public/lib/physics.js';
 import { frameAt } from '../public/lib/geo.js';
+import { LiveTrackHeader, LiveTrackPoint, NULL_I16, SpdSample, packTrackBundle } from '../public/lib/schemas.js';
 
-const FT = 0.3048, KT = 0.514444, MAX_ALT_FT = 20000;
-// flight u32, t u32 (0.1 s since midnight), lat i32, lon i32 (1e-6 deg), alt i16 (m), vE vN vZ i16 (0.1 m/s). Little endian.
-export const SPD_REC = 24, SPD_STEP = 4, SPD_BAND = 4, SPD_MAX_Z = 4000;
-
+const FT = 0.3048,
+  KT = 0.514444,
+  MAX_ALT_FT = 20000;
+export const SPD_REC = SpdSample.size,
+  SPD_STEP = 4,
+  SPD_BAND = 4,
+  SPD_MAX_Z = 4000;
 export function loadProps(file = new URL('../public/prop-types.json', import.meta.url)) {
   return new Set(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
@@ -47,12 +50,17 @@ async function* untar(input) {
   }
 }
 
-// Index rows are [0.1 s since midnight, lat 1e-4, lon 1e-4, alt m, gs 0.1 m/s, trk, vr 0.1 m/s]; resample the smoothed track every SPD_STEP s.
+// Index rows are [tEpoch, lat, lon, altFt, gsKt, trkDeg, vrFpm]; resample the smoothed track every SPD_STEP s.
 function speedSamples(d, rows, day0, flights, spend, nspd) {
   if (rows.length < 2) return 0;
   rows.sort((a, b) => a[0] - b[0]);
-  const r0 = rows[0], fr = frameAt(r0[1] / 1e4, r0[2] / 1e4);
-  const trk = buildTrack({}, rows.map((r) => [day0 + r[0] / 10, r[1] / 1e4, r[2] / 1e4, r[3], r[4] == null ? null : r[4] / 10, r[5], r[6] == null ? null : r[6] / 10]), fr);
+  const r0 = rows[0],
+    fr = frameAt(r0[1], r0[2]);
+  const trk = buildTrack(
+    {},
+    rows.map((r) => [r[0], r[1], r[2], r[3] * FT, r[4] == null ? null : r[4] * KT, r[5], r[6] == null ? null : (r[6] * FT) / 60]),
+    fr,
+  );
   if (!trk) return 0;
   const fi = flights.push([d.icao, d.t ?? null, d.r ?? null]) - 1;
   let bytes = 0;
@@ -61,19 +69,55 @@ function speedSamples(d, rows, day0, flights, spend, nspd) {
     if (!s || s.z > SPD_MAX_Z || t < day0 || t >= day0 + 86400) continue;
     const v = Math.hypot(s.vx, s.vy, s.vz);
     if (v < 15) continue;
-    const k = `${Math.floor((t - day0) / 60)}_${Math.floor(v / SPD_BAND)}`, b = Buffer.alloc(SPD_REC);
-    b.writeUInt32LE(fi, 0);
-    b.writeUInt32LE(Math.round((t - day0) * 10), 4);
-    b.writeInt32LE(Math.round(fr.lat(s.y) * 1e6), 8);
-    b.writeInt32LE(Math.round(fr.lon(s.x) * 1e6), 12);
-    b.writeInt16LE(Math.round(s.z), 16);
-    [s.vx, s.vy, s.vz].forEach((c, j) => b.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(c * 10))), 18 + 2 * j));
+    const k = `${Math.floor((t - day0) / 60)}_${Math.floor(v / SPD_BAND)}`;
+    const sample = SpdSample.create({
+      fi,
+      t_ds: Math.round((t - day0) * 10),
+      lat_e6: Math.round(fr.lat(s.y) * 1e6),
+      lon_e6: Math.round(fr.lon(s.x) * 1e6),
+      z: Math.round(s.z),
+      ve_dm: Math.max(-32768, Math.min(32767, Math.round(s.vx * 10))),
+      vn_dm: Math.max(-32768, Math.min(32767, Math.round(s.vy * 10))),
+      vz_dm: Math.max(-32768, Math.min(32767, Math.round(s.vz * 10))),
+    });
     if (!spend.has(k)) spend.set(k, []);
-    spend.get(k).push(b);
+    spend.get(k).push(Buffer.from(sample.bytes.buffer, sample.bytes.byteOffset, sample.bytes.byteLength));
     nspd.set(k, (nspd.get(k) ?? 0) + 1);
     bytes += SPD_REC;
   }
   return bytes;
+}
+
+function packTileBundle(items, day0) {
+  let totalPts = 0;
+  for (const tr of items) totalPts += tr.p.length;
+  const ptsView = LiveTrackPoint.alloc(totalPts);
+  const hdrInput = [];
+  let ptIdx = 0;
+  for (const tr of items) {
+    const pts = tr.p;
+    if (!pts.length) continue;
+    hdrInput.push({
+      pt_off: ptIdx,
+      pt_cnt: pts.length,
+      hex: tr.h || '',
+      type: tr.t || '',
+      reg: tr.r || '',
+      flight: '',
+    });
+    for (let j = 0; j < pts.length; j++) {
+      const p = pts[j];
+      const cur = ptsView.cursor(ptIdx++);
+      cur.t_ds = Math.max(0, Math.round((p[0] - day0) * 10));
+      cur.lat_e5 = Math.round(p[1] * 1e5);
+      cur.lon_e5 = Math.round(p[2] * 1e5);
+      cur.alt = Math.max(-32768, Math.min(32767, Math.round(p[3])));
+      cur.gs_d = p[4] == null ? NULL_I16 : Math.round(p[4] * 10);
+      cur.track_d = p[5] == null ? NULL_I16 : Math.round(p[5] * 10);
+      cur.rate = p[6] == null ? NULL_I16 : Math.max(-32768, Math.min(32767, Math.round(p[6])));
+    }
+  }
+  return packTrackBundle(LiveTrackHeader.pack(hdrInput), ptsView.bytes, totalPts, day0);
 }
 
 export async function* tarTraces(input) {
@@ -94,11 +138,9 @@ export async function buildIndex(traces, { date, out, props, log = () => {} }) {
   const pend = new Map(), npts = new Map(), spend = new Map(), nspd = new Map(), flights = [];
   let pendBytes = 0, spdBytes = 0, files = 0, kept = 0;
   const flush = () => {
-    for (const [k, v] of pend) fs.appendFileSync(path.join(tmp, k), v.join(''));
     for (const [k, v] of spend) fs.appendFileSync(path.join(stmp, k), Buffer.concat(v));
-    pend.clear();
     spend.clear();
-    pendBytes = spdBytes = 0;
+    spdBytes = 0;
   };
   for await (const d of traces) {
     if (++files % 20000 === 0) log(`${files} traces, ${kept} props`);
@@ -106,36 +148,45 @@ export async function buildIndex(traces, { date, out, props, log = () => {} }) {
     const tiles = new Map();
     let lastT = -Infinity;
     for (const r of d.trace) {
-      const t = d.timestamp + r[0], alt = r[10] ?? r[3];
+      const t = d.timestamp + r[0],
+        alt = r[10] ?? r[3];
       if (r[3] === 'ground' || typeof alt !== 'number' || alt > MAX_ALT_FT || t < day0 || t >= day0 + 86400 || t - lastT < 2) continue;
       lastT = t;
-      const key = `${Math.floor(r[1])}_${Math.floor(r[2])}`, vr = r[11] ?? r[7];
+      const key = `${Math.floor(r[1])}_${Math.floor(r[2])}`,
+        vr = r[11] ?? r[7];
       if (!tiles.has(key)) tiles.set(key, []);
-      tiles.get(key).push([Math.round((t - day0) * 10), Math.round(r[1] * 1e4), Math.round(r[2] * 1e4), Math.round(alt * FT), r[4] == null ? null : Math.round(r[4] * KT * 10), r[5] == null ? null : Math.round(r[5]), vr == null ? null : Math.round(((vr * FT) / 60) * 10)]);
+      tiles.get(key).push([
+        Math.round(t * 10) / 10,
+        r[1],
+        r[2],
+        alt,
+        r[4] == null ? null : r[4],
+        r[5] == null ? null : r[5],
+        vr == null ? null : vr,
+      ]);
     }
     if (tiles.size) kept++;
     spdBytes += speedSamples(d, [...tiles.values()].flat(), day0, flights, spend, nspd);
     for (const [k, p] of tiles) {
-      const c = [0, 1, 2, 3, 4, 5, 6].map((j) => p.map((row, i) => (j < 4 && i ? row[j] - p[i - 1][j] : row[j])));
-      const line = JSON.stringify({ h: d.icao, t: d.t, r: d.r ?? null, c }) + '\n';
       if (!pend.has(k)) pend.set(k, []);
-      pend.get(k).push(line);
+      pend.get(k).push({ h: d.icao, t: d.t, r: d.r ?? null, p });
       npts.set(k, (npts.get(k) ?? 0) + p.length);
-      if ((pendBytes += line.length) + spdBytes > 256e6) flush();
     }
+    if (spdBytes > 256e6) flush();
   }
   flush();
-
   for (const sub of ['day', 'idx']) fs.mkdirSync(path.join(out, sub), { recursive: true });
-  const binPath = path.join(out, 'day', `${date}.bin`), fd = fs.openSync(binPath, 'w'), tiles = {};
+  const binPath = path.join(out, 'day', `${date}.bin`),
+    fd = fs.openSync(binPath, 'w'),
+    tiles = {};
   let off = 0;
-  for (const k of fs.readdirSync(tmp).filter((f) => f !== 'spd').sort()) {
-    const gz = zlib.gzipSync(fs.readFileSync(path.join(tmp, k)), { level: 9 });
+  for (const k of [...pend.keys()].sort()) {
+    const bundle = packTileBundle(pend.get(k), day0);
+    const gz = zlib.gzipSync(bundle, { level: 9 });
     fs.writeSync(fd, gz);
     tiles[k] = [off, gz.length, npts.get(k)];
     off += gz.length;
   }
-  fs.closeSync(fd);
   fs.writeFileSync(path.join(out, 'idx', `${date}.json`), JSON.stringify({ date, tiles }));
   fs.mkdirSync(path.join(out, 'spd'), { recursive: true });
   const sfd = fs.openSync(path.join(out, 'spd', `${date}.bin`), 'w'), keys = {};

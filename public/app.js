@@ -3,7 +3,7 @@ import { FS } from './lib/spectro.js';
 import { search } from './lib/search.js';
 import { liveFeed } from './lib/data.js';
 import { newMessagePortRpcSession, transferArrayBuffer } from './lib/vendor/capnweb.js';
-
+import { unpackAnalysis } from './lib/schemas.js';
 const $ = (id) => document.getElementById(id);
 const status = (s) => ($('status').textContent = s);
 
@@ -806,7 +806,7 @@ async function locate(samples, origin, myGen = runGen) {
           start = Math.max(0, end - winLen),
           sub = samples.slice(start, end),
           subOrigin = origin + start / FS;
-        const a = await analyzer.analyze(transferArrayBuffer(sub));
+        const a = unpackAnalysis(await analyzer.analyze(transferArrayBuffer(sub)));
         if (myGen !== runGen) return;
         a.origin = subOrigin;
         merge(a.events, subOrigin, a, null);
@@ -815,7 +815,7 @@ async function locate(samples, origin, myGen = runGen) {
       }
     } else {
       const workBuf = src === 'rec' ? new Float32Array(samples) : samples;
-      const a = await analyzer.analyze(transferArrayBuffer(workBuf));
+      const a = unpackAnalysis(await analyzer.analyze(transferArrayBuffer(workBuf)));
       if (myGen !== runGen) return;
       a.origin = origin;
       merge(a.events, origin, a, src === 'rec' && a.events.length ? { x: samples, t0: origin } : null);

@@ -1,7 +1,7 @@
 import { buildTrack } from './physics.js';
 import { FT, KT, frameAt } from './geo.js';
 import { newHttpBatchRpcSession } from './vendor/capnweb.js';
-import { LiveTrackHeader, LiveTrackPoint, NULL_I16, SpdSample } from './schemas.js';
+import { LiveTrackHeader, LiveTrackPoint, NULL_I16, SpdSample, unpackTrackBundle } from './schemas.js';
 // Tracks are { meta: { hex, type, reg }, rows: [[tEpoch, lat, lon, altM, gsMps, trkDeg, vrMps]] }.
 
 // Inverse of the columnar line format written by scripts/build-index.mjs.
@@ -123,14 +123,48 @@ export async function loadHistory(lat, lon, rKm, t0, t1, base = '') {
       await Promise.all(
         keys.filter((k) => idx.tiles[k]).map(async (k) => {
           const [off, len] = idx.tiles[k];
-          const text = new TextDecoder().decode(await rangeGunzip(`${root}/data/day/${day}.bin`, off, len));
-          for (const line of text.split('\n')) {
-            if (!line) continue;
-            const tr = decodeLine(line, day0), rows = tr.rows.filter((x) => x[0] >= t0 - 120 && x[0] <= t1 + 120);
-            if (!rows.length) continue;
-            const e = byHex.get(tr.meta.hex);
-            if (e) e.rows.push(...rows);
-            else byHex.set(tr.meta.hex, { meta: tr.meta, rows });
+          const raw = new Uint8Array(await rangeGunzip(`${root}/data/day/${day}.bin`, off, len));
+          if (!raw.byteLength) return;
+          if (raw[0] === 0x7b) {
+            const text = new TextDecoder().decode(raw);
+            for (const line of text.split('\n')) {
+              if (!line) continue;
+              const tr = decodeLine(line, day0),
+                rows = tr.rows.filter((x) => x[0] >= t0 - 120 && x[0] <= t1 + 120);
+              if (!rows.length) continue;
+              const e = byHex.get(tr.meta.hex);
+              if (e) e.rows.push(...rows);
+              else byHex.set(tr.meta.hex, { meta: tr.meta, rows });
+            }
+          } else {
+            const { baseSec, hdrs, pts } = unpackTrackBundle(raw);
+            for (const h of hdrs) {
+              const hex = h.hex;
+              if (!hex || !h.pt_cnt) continue;
+              const rows = [];
+              const end = h.pt_off + h.pt_cnt;
+              for (let j = h.pt_off; j < end; j++) {
+                const pt = pts.cursor(j);
+                const t = baseSec + pt.t_ds / 10;
+                if (t < t0 - 120 || t > t1 + 120) continue;
+                const gs_d = pt.gs_d,
+                  track_d = pt.track_d,
+                  rate = pt.rate;
+                rows.push([
+                  t,
+                  pt.lat_e5 / 1e5,
+                  pt.lon_e5 / 1e5,
+                  pt.alt * FT,
+                  gs_d === NULL_I16 ? null : (gs_d / 10) * KT,
+                  track_d === NULL_I16 ? null : track_d / 10,
+                  rate === NULL_I16 ? null : (rate * FT) / 60,
+                ]);
+              }
+              if (!rows.length) continue;
+              const e = byHex.get(hex);
+              if (e) e.rows.push(...rows);
+              else byHex.set(hex, { meta: { hex, type: h.type || null, reg: h.reg || null, flight: h.flight || null }, rows });
+            }
           }
         }),
       );
@@ -234,16 +268,24 @@ export class LiveFeed {
     else this.clockOffset = 0;
     if (updateSince) this.lastPollMs = Date.now();
     if (Array.isArray(d.ac) && d.ac.length) this.latest = d.ac;
-    if (d.trackHeaders instanceof Uint8Array && d.trackPoints instanceof Uint8Array) {
-      const baseSec = d.baseSec ?? 0;
-      const hdrs = LiveTrackHeader.array(d.trackHeaders);
-      const pts = LiveTrackPoint.array(d.trackPoints);
+    const bin =
+      d.bundle instanceof Uint8Array
+        ? unpackTrackBundle(d.bundle)
+        : d.trackHeaders instanceof Uint8Array && d.trackPoints instanceof Uint8Array
+          ? {
+              baseSec: d.baseSec ?? 0,
+              hdrs: LiveTrackHeader.array(d.trackHeaders),
+              pts: LiveTrackPoint.array(d.trackPoints),
+            }
+          : null;
+    if (bin) {
+      const { baseSec, hdrs, pts } = bin;
       for (const h of hdrs) {
         const hex = h.hex;
         if (!hex || !h.pt_cnt) continue;
         let e = this.ac.get(hex);
         if (!e) {
-          e = { meta: { hex, type: h.type || null, reg: h.reg || null, flight: h.flight || null }, rows: [], _dirty: true };
+          e = { meta: { hex, type: h.type || null, reg: h.reg || null, flight: h.flight || null }, rows: [], _dirty: true, _unsorted: false };
           this.ac.set(hex, e);
         } else {
           e.meta.type = h.type || e.meta.type;
@@ -257,7 +299,10 @@ export class LiveFeed {
           const last = e.rows[e.rows.length - 1];
           if (last) {
             if (Math.abs(t - last[0]) < 0.5) continue;
-            if (t < last[0] && e.rows.some((r) => Math.abs(r[0] - t) < 0.5)) continue;
+            if (t < last[0]) {
+              if (e.rows.some((r) => Math.abs(r[0] - t) < 0.5)) continue;
+              e._unsorted = true;
+            }
           }
           const gs_d = ptCur.gs_d,
             track_d = ptCur.track_d,
@@ -320,7 +365,10 @@ export class LiveFeed {
       e._dirty = true;
     }
     for (const [hex, e] of this.ac) {
-      if (e.rows.length > 1 && e._dirty) e.rows.sort((a, b) => a[0] - b[0]);
+      if (e.rows.length > 1 && e._unsorted) {
+        e.rows.sort((a, b) => a[0] - b[0]);
+        e._unsorted = false;
+      }
       if (e.rows.length && e.rows[0][0] <= this.now - 86400) {
         e.rows = e.rows.filter((x) => x[0] > this.now - 86400);
         e._dirty = true;

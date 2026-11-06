@@ -1,5 +1,5 @@
 import { FS } from './spectro.js';
-
+import { WavHeader } from './schemas.js';
 // Browsers resample decode and capture to this rate with a proper filter; we halve it ourselves.
 const SRC = 2 * FS;
 
@@ -126,11 +126,27 @@ export class Recorder {
   }
 }
 
-// 16-bit mono WAV at FS, for saving a recording locally.
+// 16-bit mono WAV at FS, encoded via capnstruct WavHeader (#[repr(C)]).
 export function wav(x) {
-  const b = new DataView(new ArrayBuffer(44 + x.length * 2)), str = (o, t) => [...t].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
-  str(0, 'RIFF'), b.setUint32(4, 36 + x.length * 2, true), str(8, 'WAVEfmt '), b.setUint32(16, 16, true), b.setUint16(20, 1, true), b.setUint16(22, 1, true);
-  b.setUint32(24, FS, true), b.setUint32(28, FS * 2, true), b.setUint16(32, 2, true), b.setUint16(34, 16, true), str(36, 'data'), b.setUint32(40, x.length * 2, true);
-  for (let i = 0; i < x.length; i++) b.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x[i])) * 32767, true);
-  return new Blob([b], { type: 'audio/wav' });
+  const dataBytes = x.length * 2;
+  const buf = new ArrayBuffer(WavHeader.size + dataBytes);
+  const hdr = WavHeader.view(buf, 0);
+  hdr.riff_magic = 0x46464952; // 'RIFF'
+  hdr.file_size = 36 + dataBytes;
+  hdr.wave_magic = 0x45564157; // 'WAVE'
+  hdr.fmt_magic = 0x20746d66; // 'fmt '
+  hdr.fmt_size = 16;
+  hdr.audio_format = 1;
+  hdr.num_channels = 1;
+  hdr.sample_rate = FS;
+  hdr.byte_rate = FS * 2;
+  hdr.block_align = 2;
+  hdr.bits_per_sample = 16;
+  hdr.data_magic = 0x61746164; // 'data'
+  hdr.data_size = dataBytes;
+  const pcm = new Int16Array(buf, WavHeader.size, x.length);
+  for (let i = 0; i < x.length; i++) {
+    pcm[i] = Math.max(-1, Math.min(1, x[i])) * 32767;
+  }
+  return new Blob([buf], { type: 'audio/wav' });
 }

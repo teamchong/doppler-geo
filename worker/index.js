@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import PROPS from '../public/prop-types.json';
 import { RpcTarget, newWorkersRpcResponse } from '../public/lib/vendor/capnweb.js';
-import { LiveTrackHeader, LiveTrackPoint, NULL_I16 } from '../public/lib/schemas.js';
+import { LiveTrackHeader, LiveTrackPoint, NULL_I16, packTrackBundle, unpackTrackBundle } from '../public/lib/schemas.js';
 const PROP = new Set(PROPS);
 const LIVE_TYPES = PROPS.slice(0, 750).join(',');
 const FIELDS = ['hex', 't', 'r', 'flight', 'lat', 'lon', 'alt_baro', 'alt_geom', 'gs', 'track', 'baro_rate', 'geom_rate', 'seen_pos'];
@@ -33,21 +33,78 @@ async function fetchUpstream(upstream) {
 }
 
 // Singleton Durable Object that maintains a continuous 60-minute rolling window of worldwide prop aircraft tracks.
-function packParts(list) {
+function packItemBundle(items, baseSec) {
+  let totalPts = 0;
+  for (const item of items) totalPts += item.p.length;
+  const ptsView = LiveTrackPoint.alloc(totalPts);
+  const hdrInput = [];
+  let ptIdx = 0;
+  for (const tr of items) {
+    const pts = tr.p;
+    if (!pts.length) continue;
+    hdrInput.push({
+      pt_off: ptIdx,
+      pt_cnt: pts.length,
+      hex: tr.h || '',
+      type: tr.t || '',
+      reg: tr.r || '',
+      flight: tr.fl || '',
+    });
+    for (let j = 0; j < pts.length; j++) {
+      const p = pts[j];
+      const cur = ptsView.cursor(ptIdx++);
+      cur.t_ds = Math.max(0, Math.round((p[0] - baseSec) * 10));
+      cur.lat_e5 = Math.round(p[1] * 1e5);
+      cur.lon_e5 = Math.round(p[2] * 1e5);
+      cur.alt = Math.max(-32768, Math.min(32767, Math.round(p[3])));
+      cur.gs_d = p[4] == null ? NULL_I16 : Math.round(p[4] * 10);
+      cur.track_d = p[5] == null ? NULL_I16 : Math.round(p[5] * 10);
+      cur.rate = p[6] == null ? NULL_I16 : Math.max(-32768, Math.min(32767, Math.round(p[6])));
+    }
+  }
+  return packTrackBundle(LiveTrackHeader.pack(hdrInput), ptsView.bytes, totalPts, baseSec);
+}
+
+function unpackItemBundle(part) {
+  if (Array.isArray(part)) return part;
+  if (!(part instanceof Uint8Array || part instanceof ArrayBuffer)) return [];
+  const { baseSec, hdrs, pts } = unpackTrackBundle(part);
+  const out = [];
+  for (const h of hdrs) {
+    if (!h.hex || !h.pt_cnt) continue;
+    const p = new Array(h.pt_cnt);
+    for (let j = 0; j < h.pt_cnt; j++) {
+      const cur = pts.cursor(h.pt_off + j);
+      p[j] = [
+        Math.round((baseSec + cur.t_ds / 10) * 10) / 10,
+        cur.lat_e5 / 1e5,
+        cur.lon_e5 / 1e5,
+        cur.alt,
+        cur.gs_d === NULL_I16 ? null : cur.gs_d / 10,
+        cur.track_d === NULL_I16 ? null : cur.track_d / 10,
+        cur.rate === NULL_I16 ? null : cur.rate,
+      ];
+    }
+    out.push({ h: h.hex, t: h.type || null, r: h.reg || null, fl: h.flight || null, p });
+  }
+  return out;
+}
+
+function packParts(list, baseSec = 0) {
   const parts = [];
   let cur = [],
     curPts = 0;
   for (const item of list) {
     if (!item.p?.length) continue;
-    if (cur.length && (curPts + item.p.length > 900 || cur.length >= 100)) {
-      parts.push(cur);
+    if (cur.length && (curPts + item.p.length > 3500 || cur.length >= 600)) {
+      parts.push(packItemBundle(cur, baseSec));
       cur = [];
       curPts = 0;
     }
     cur.push(item);
     curPts += item.p.length;
   }
-  if (cur.length) parts.push(cur);
+  if (cur.length) parts.push(packItemBundle(cur, baseSec));
   return parts;
 }
 
@@ -78,7 +135,7 @@ export class LiveTrackerDO extends DurableObject {
       const map = await this.ctx.storage.get(keys.slice(i, i + 128));
       for (let j = i; j < Math.min(keys.length, i + 128); j++) {
         const part = map.get(keys[j]);
-        if (Array.isArray(part)) out.push(...part);
+        if (part) out.push(...unpackItemBundle(part));
       }
     }
     return out;
@@ -105,7 +162,7 @@ export class LiveTrackerDO extends DurableObject {
       }
       list = [...byHex.values()];
     }
-    const parts = packParts(list);
+    const parts = packParts(list, b * BUCKET_S);
     const puts = { [`b_${b}_meta`]: { parts: parts.length } };
     for (let i = 0; i < parts.length; i++) {
       puts[`b_${b}_${i}`] = parts[i];
@@ -182,8 +239,8 @@ export class LiveTrackerDO extends DurableObject {
         const keys = Array.from({ length: hotMeta.parts }, (_, i) => `hot_${i}`);
         for (let i = 0; i < keys.length; i += 128) {
           const map = await this.ctx.storage.get(keys.slice(i, i + 128));
-          for (const list of map.values()) {
-            if (!Array.isArray(list)) continue;
+          for (const rawPart of map.values()) {
+            const list = unpackItemBundle(rawPart);
             for (const item of list) {
               const p = (item.p ?? []).filter((r) => r[0] > cut);
               if (p.length) this.ac.set(item.h, { h: item.h, t: item.t, r: item.r, fl: item.fl ?? null, p });
@@ -229,7 +286,7 @@ export class LiveTrackerDO extends DurableObject {
     try {
       const nowSec = (this.now || Date.now()) / 1000;
       await this._archiveCold(nowSec);
-      const parts = packParts([...this.ac.values()]);
+      const parts = packParts([...this.ac.values()], Math.floor(nowSec - HOT_WINDOW_S));
       for (let i = 0; i < parts.length; i += 128) {
         const batch = {};
         const end = Math.min(parts.length, i + 128);
@@ -357,40 +414,11 @@ export class LiveTrackerDO extends DurableObject {
   async getBinarySlice(opts = {}) {
     const { now, window, byHex } = await this._collectSlice(opts.since ?? null, opts.until ?? null);
     const baseSec = window ? Math.floor(window[0]) : Math.floor(now / 1000);
-    let totalPts = 0;
-    for (const tr of byHex.values()) totalPts += tr.p.length;
-    const ptsView = LiveTrackPoint.alloc(totalPts);
-    const hdrInput = [];
-    let ptIdx = 0;
-    for (const tr of byHex.values()) {
-      const pts = tr.p;
-      if (!pts.length) continue;
-      hdrInput.push({
-        pt_off: ptIdx,
-        pt_cnt: pts.length,
-        hex: tr.h || '',
-        type: tr.t || '',
-        reg: tr.r || '',
-        flight: tr.fl || '',
-      });
-      for (let j = 0; j < pts.length; j++) {
-        const p = pts[j];
-        const cur = ptsView.cursor(ptIdx++);
-        cur.t_ds = Math.max(0, Math.round((p[0] - baseSec) * 10));
-        cur.lat_e5 = Math.round(p[1] * 1e5);
-        cur.lon_e5 = Math.round(p[2] * 1e5);
-        cur.alt = Math.max(-32768, Math.min(32767, Math.round(p[3])));
-        cur.gs_d = p[4] == null ? NULL_I16 : Math.round(p[4] * 10);
-        cur.track_d = p[5] == null ? NULL_I16 : Math.round(p[5] * 10);
-        cur.rate = p[6] == null ? NULL_I16 : Math.max(-32768, Math.min(32767, Math.round(p[6])));
-      }
-    }
+    const bundle = packItemBundle([...byHex.values()], baseSec);
     return {
       now,
       window,
-      baseSec,
-      trackHeaders: LiveTrackHeader.pack(hdrInput),
-      trackPoints: ptsView.bytes,
+      bundle,
     };
   }
 

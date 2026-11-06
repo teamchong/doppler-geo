@@ -3,12 +3,14 @@ import { analyze } from './lib/spectro.js';
 import { solve } from './lib/solver.js';
 import { Dem, frameAt } from './lib/geo.js';
 import { buildTrack } from './lib/physics.js';
+import { packAnalysis } from './lib/schemas.js';
 
 class AnalyzerService extends RpcTarget {
   analyze(samples) {
-    const result = analyze(samples);
-    transferArrayBuffer(result.img);
-    return result;
+    const packed = packAnalysis(analyze(samples));
+    transferArrayBuffer(packed.meta);
+    transferArrayBuffer(packed.img);
+    return packed;
   }
 
   solve(p) {
