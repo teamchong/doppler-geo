@@ -2,6 +2,16 @@ import { buildTrack } from './physics.js';
 import { score } from './solver.js';
 import { frameAt, distM } from './geo.js';
 import { loadHistory, availableDays, rangeGunzip, liveFeed, dataRoot } from './data.js';
+import {
+  SpdSample,
+  ShardDesc,
+  PassDesc,
+  QpPoint,
+  SpanDesc,
+  OutHit,
+  OutShortlist,
+  IOHeader,
+} from './schemas.js';
 
 // Worldwide pass search over the speed index (scripts/build-index.mjs, out/spd).
 // 1. Lookup + Join + Pre-rank: executed in a single cross-boundary call inside the Rust WASM kernel
@@ -168,22 +178,20 @@ export class SpeedStore {
     const list = await this.rawShard(min, band);
     const out = [];
     for (const sh of list) {
-      const dv = new DataView(sh.bytes.buffer, sh.bytes.byteOffset, sh.bytes.byteLength);
-      for (let o = 0; o + REC <= dv.byteLength; o += REC) {
-        const f = this.flights[sh.fidBase + dv.getUint32(o, true)];
+      for (const s of SpdSample.array(sh.bytes, 0, sh.count)) {
+        const f = this.flights[sh.fidBase + s.fi];
         out.push({
           f,
-          t: sh.day0 + dv.getUint32(o + 4, true) / 10,
-          lat: dv.getInt32(o + 8, true) / 1e6,
-          lon: dv.getInt32(o + 12, true) / 1e6,
-          z: dv.getInt16(o + 16, true),
-          ve: dv.getInt16(o + 18, true) / 10,
-          vn: dv.getInt16(o + 20, true) / 10,
-          vz: dv.getInt16(o + 22, true) / 10,
+          t: sh.day0 + s.t_ds / 10,
+          lat: s.lat_e6 / 1e6,
+          lon: s.lon_e6 / 1e6,
+          z: s.z,
+          ve: s.ve_dm / 10,
+          vn: s.vn_dm / 10,
+          vz: s.vz_dm / 10,
         });
       }
     }
-    return out;
   }
 }
 
@@ -369,94 +377,83 @@ export async function search(events, { s0, s1, base = '', onProgress = () => {} 
     for (const sh of shardList) sh.wasmOff = -1;
   }
 
-  const memBuf = kernel.memory.buffer;
-  const hdrU32 = new Uint32Array(memBuf, hdrPtr, 17);
-  const samplesPtr = hdrU32[9];
-  const shardsPtr = hdrU32[10];
-  const fidToHexPtr = hdrU32[11];
-  const passesPtr = hdrU32[12];
-  const qpPtr = hdrU32[13];
-  const spansPtr = hdrU32[14];
-  const outHitsPtr = hdrU32[15];
-  const outShortlistPtr = hdrU32[16];
+  const hdr = IOHeader.view(kernel.memory, hdrPtr);
 
   // 1. Copy any newly-fetched 24-byte SpdSample shard buffers directly into wasm.memory (zero serialization)
-  const wasmU8 = new Uint8Array(memBuf);
+  const wasmU8 = new Uint8Array(kernel.memory.buffer);
   for (const sh of shardList) {
     if (sh.wasmOff < 0) {
       sh.wasmOff = wasmSampleCursor;
-      wasmU8.set(sh.bytes.subarray(0, sh.count * REC), samplesPtr + sh.wasmOff * REC);
+      wasmU8.set(sh.bytes.subarray(0, sh.count * REC), hdr.samples_ptr + sh.wasmOff * REC);
       wasmSampleCursor += sh.count;
     }
   }
 
-  // 2. Write ShardDesc table into wasm.memory
-  const shardsU32 = new Uint32Array(memBuf, shardsPtr, shardList.length * 8);
-  const shardsI32 = new Int32Array(memBuf, shardsPtr, shardList.length * 8);
-  const shardsF64 = new Float64Array(memBuf, shardsPtr, shardList.length * 4);
+  // 2. Write ShardDesc table into wasm.memory via capnstruct #[repr(C)] view
+  const shards = ShardDesc.array(kernel.memory, hdr.shards_ptr, shardList.length);
   for (let i = 0; i < shardList.length; i++) {
     const sh = shardList[i];
-    const u = i * 8;
-    shardsU32[u] = sh.wasmOff;
-    shardsU32[u + 1] = sh.count;
-    shardsI32[u + 2] = sh.minute;
-    shardsI32[u + 3] = sh.band;
-    shardsU32[u + 4] = sh.fidBase;
-    shardsU32[u + 5] = 0;
-    shardsF64[i * 4 + 3] = sh.day0;
+    const shCur = shards.cursor(i);
+    shCur.sample_off = sh.wasmOff;
+    shCur.sample_cnt = sh.count;
+    shCur.minute = sh.minute;
+    shCur.band = sh.band;
+    shCur.fid_base = sh.fidBase;
+    shCur._pad = 0;
+    shCur.day0 = sh.day0;
   }
 
   // 3. Sync fid -> hexId mapping table into wasm.memory
-  const fidToHexU32 = new Uint32Array(memBuf, fidToHexPtr, store.fidToHex.length);
+  const fidToHexU32 = new Uint32Array(kernel.memory.buffer, hdr.fid_to_hex_ptr, store.fidToHex.length);
   fidToHexU32.set(store.fidToHex);
 
-  // 4. Write PassDesc + QpPoint tables into wasm.memory
+  // 4. Write PassDesc + QpPoint tables into wasm.memory via capnstruct #[repr(C)] views
   const pCnt = Math.min(events.length, 6);
-  const passesF64 = new Float64Array(memBuf, passesPtr, pCnt * 4);
-  const passesU32 = new Uint32Array(memBuf, passesPtr, pCnt * 8);
-  const qpF64 = new Float64Array(memBuf, qpPtr, 128 * 2);
+  const passes = PassDesc.array(kernel.memory, hdr.passes_ptr, pCnt);
+  const qps = QpPoint.array(kernel.memory, hdr.qp_ptr, 128);
   let qpCursor = 0;
   for (let p = 0; p < pCnt; p++) {
     const e = events[p];
     const step = Math.max(1, Math.ceil(e.pts.length / 16));
     const qpOff = qpCursor;
     for (let j = 0; j < e.pts.length && qpCursor < 128; j += step) {
-      qpF64[qpCursor * 2] = e.pts[j][0];
-      qpF64[qpCursor * 2 + 1] = e.pts[j][1];
+      const qpCur = qps.cursor(qpCursor);
+      qpCur.tr = e.pts[j][0];
+      qpCur.f = e.pts[j][1];
       qpCursor++;
     }
-    passesF64[p * 4] = e.v;
-    passesF64[p * 4 + 1] = e.d;
-    passesF64[p * 4 + 2] = e.tc;
-    passesU32[p * 8 + 6] = qpOff;
-    passesU32[p * 8 + 7] = qpCursor - qpOff;
+    const passCur = passes.cursor(p);
+    passCur.v = e.v;
+    passCur.d = e.d;
+    passCur.tc = e.tc;
+    passCur.qp_off = qpOff;
+    passCur.qp_cnt = qpCursor - qpOff;
   }
 
-  // 5. Write SpanDesc table into wasm.memory
+  // 5. Write SpanDesc table into wasm.memory via capnstruct #[repr(C)] view
   const sCnt = Math.min(spans.length, 64);
-  const spansF64 = new Float64Array(memBuf, spansPtr, sCnt * 2);
+  const spanTable = SpanDesc.array(kernel.memory, hdr.spans_ptr, sCnt);
   for (let i = 0; i < sCnt; i++) {
-    spansF64[i * 2] = spans[i][0];
-    spansF64[i * 2 + 1] = spans[i][1];
+    const spanCur = spanTable.cursor(i);
+    spanCur.sp0 = spans[i][0];
+    spanCur.sp1 = spans[i][1];
   }
 
   // 6. Update IOHeader counts and cross the WASM boundary ONCE
-  hdrU32[0] = wasmSampleCursor;
-  hdrU32[1] = shardList.length;
-  hdrU32[2] = store.fidToHex.length;
-  hdrU32[3] = Math.max(1, store.hexToId.size);
-  hdrU32[4] = pCnt;
-  hdrU32[5] = qpCursor;
-  hdrU32[6] = sCnt;
+  hdr.num_samples = wasmSampleCursor;
+  hdr.num_shards = shardList.length;
+  hdr.num_fids = store.fidToHex.length;
+  hdr.num_hexes = Math.max(1, store.hexToId.size);
+  hdr.num_passes = pCnt;
+  hdr.num_qp = qpCursor;
+  hdr.num_spans = sCnt;
 
   kernel.run_search();
   onProgress(0.9);
 
-  // Re-bind views in case WASM memory grew inside run_search()
-  const outBuf = kernel.memory.buffer;
-  const outHdrU32 = new Uint32Array(outBuf, hdrPtr, 17);
-  const numHits = outHdrU32[7];
-  const numShortlist = outHdrU32[8];
+  // IOHeader view auto-syncs if WebAssembly.Memory grew inside run_search()
+  const numHits = hdr.out_hits_count;
+  const numShortlist = hdr.out_shortlist_count;
 
   // Build pass subsets matching search_kernel.rs
   const sets = [];
@@ -464,46 +461,46 @@ export async function search(events, { s0, s1, base = '', onProgress = () => {} 
     sets.push(Array.from({ length: pCnt }, (_, i) => i));
     if (pCnt >= 3) {
       for (let i = 0; i < pCnt; i++) sets.push(Array.from({ length: pCnt }, (_, j) => j).filter((j) => j !== i));
-      if (pCnt >= 4)
-        for (let i = 0; i < pCnt; i++)
-          for (let j = i + 1; j < pCnt; j++) sets.push([i, j]);
+    }
+    if (pCnt >= 4) {
+      for (let i = 0; i < pCnt; i++) {
+        for (let j = i + 1; j < pCnt; j++) sets.push([i, j]);
+      }
     }
   }
 
-  // Read pre-ranked OutHit structs directly from wasm.memory
+  // Read pre-ranked OutHit structs directly from wasm.memory via capnstruct flyweight cursor
   const hitsBySet = sets.map(() => []);
   if (numHits > 0) {
-    const hitsF64 = new Float64Array(outBuf, outHitsPtr, numHits * 8);
-    const hitsU32 = new Uint32Array(outBuf, outHitsPtr, numHits * 16);
-    for (let i = 0; i < numHits; i++) {
-      const f = i * 8,
-        u = i * 16;
-      const lat = hitsF64[f],
-        lon = hitsF64[f + 1],
-        start = hitsF64[f + 2],
-        pre = hitsF64[f + 3];
-      const setIdx = hitsU32[u + 8],
-        nFlights = hitsU32[u + 9];
+    for (const h of OutHit.array(kernel.memory, hdr.out_hits_ptr, numHits)) {
+      const setIdx = h.set_idx;
+      const nFlights = h.n_flights;
+      const fids = h.fids;
       const flights = [];
-      for (let k = 0; k < nFlights; k++) flights.push(store.flights[hitsU32[u + 10 + k]]);
-      if (hitsBySet[setIdx]) hitsBySet[setIdx].push({ lat, lon, start, pre, flights });
+      for (let k = 0; k < nFlights; k++) flights.push(store.flights[fids[k]]);
+      if (hitsBySet[setIdx]) hitsBySet[setIdx].push({ lat: h.lat, lon: h.lon, start: h.start, pre: h.pre, flights });
     }
   }
+
   // Read per-pass OutShortlist structs directly from wasm.memory before async verification
   const passShortlists = Array.from({ length: pCnt }, () => []);
   if (numShortlist > 0) {
-    const slU32 = new Uint32Array(outBuf, outShortlistPtr, numShortlist * 10);
-    const slF64 = new Float64Array(outBuf, outShortlistPtr, numShortlist * 5);
-    for (let i = 0; i < numShortlist; i++) {
-      const fid = slU32[i * 10],
-        pIdx = slU32[i * 10 + 1];
-      const lat = slF64[i * 5 + 1],
-        lon = slF64[i * 5 + 2],
-        start = slF64[i * 5 + 3],
-        dv = slF64[i * 5 + 4];
-      const f = store.flights[fid];
-      if (f && passShortlists[pIdx])
-        passShortlists[pIdx].push({ lat, lon, start, flights: [f], hull: circle(lat, lon, 300), q: null, score: 1, unheard: 0, dv });
+    for (const sl of OutShortlist.array(kernel.memory, hdr.out_shortlist_ptr, numShortlist)) {
+      const pIdx = sl._pad;
+      const f = store.flights[sl.fid];
+      if (f && passShortlists[pIdx]) {
+        passShortlists[pIdx].push({
+          lat: sl.lat,
+          lon: sl.lon,
+          start: sl.start,
+          flights: [f],
+          hull: circle(sl.lat, sl.lon, 300),
+          q: null,
+          score: 1,
+          unheard: 0,
+          dv: sl.dv,
+        });
+      }
     }
   }
   const passPlanes = passShortlists.map((l) => l.length);

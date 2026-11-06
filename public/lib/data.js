@@ -1,6 +1,7 @@
 import { buildTrack } from './physics.js';
 import { FT, KT, frameAt } from './geo.js';
-
+import { newHttpBatchRpcSession } from './vendor/capnweb.js';
+import { LiveTrackHeader, LiveTrackPoint, NULL_I16, SpdSample } from './schemas.js';
 // Tracks are { meta: { hex, type, reg }, rows: [[tEpoch, lat, lon, altM, gsMps, trkDeg, vrMps]] }.
 
 // Inverse of the columnar line format written by scripts/build-index.mjs.
@@ -168,30 +169,64 @@ export class LiveFeed {
     this._flights = [];
     this._trks = [];
     this._day0 = 0;
+    this.spans = [];
   }
+
+  _addSpan(a, b) {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return;
+    this.spans.push([a, b]);
+    this.spans.sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const s of this.spans) {
+      if (merged.length && s[0] <= merged[merged.length - 1][1] + 30) {
+        merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], s[1]);
+      } else {
+        merged.push(s);
+      }
+    }
+    this.spans = merged;
+  }
+
   async poll() {
-    const q = this.center
-      ? `?lat=${Math.round(this.center.lat * 4) / 4}&lon=${Math.round(this.center.lon * 4) / 4}`
-      : this.lastSince > 0
-        ? `?since=${Math.floor(this.lastSince)}`
-        : '';
-    const r = await fetch(`${this.base}/api/live${q}`);
-    if (!r.ok) throw new Error(`live feed ${r.status}`);
-    const d = await r.json();
-    return this._ingest(d, true);
+    const askSince = !this.center && this.lastSince > 0 ? Math.floor(this.lastSince) : 0;
+    let d;
+    if (this.center) {
+      const q = `?lat=${Math.round(this.center.lat * 4) / 4}&lon=${Math.round(this.center.lon * 4) / 4}`;
+      const r = await fetch(`${this.base}/api/live${q}`);
+      if (!r.ok) throw new Error(`live feed ${r.status}`);
+      d = await r.json();
+    } else {
+      const rpc = newHttpBatchRpcSession(`${this.base}/api/live`, { binary: true });
+      d = await rpc.getSlice({ since: askSince > 0 ? askSince : null, includeAc: true });
+    }
+    const res = this._ingest(d, true);
+    if (!this.center && Array.isArray(d.window) && d.window.length === 2 && Number.isFinite(d.window[0])) {
+      const spanStart = Math.max(d.window[0], askSince > 0 ? askSince : this.now - 1200);
+      this._addSpan(spanStart, Math.max(spanStart, this.now));
+    }
+    return res;
   }
+
   async ensureWindow(s0, s1) {
     const nowEst = this.now || Date.now() / 1000;
-    if (s1 < nowEst - 10800 || s0 > nowEst + 600) return;
-    const win = this.window();
-    if (win && s0 >= win[0] + 60 && s1 <= win[1] - 5) return;
+    if (s1 < nowEst - 86400 || s0 > nowEst + 600) return;
     const since = Math.floor(s0 - 180),
       until = Math.ceil(s1 + 180);
-    const r = await fetch(`${this.base}/api/live?since=${since}&until=${until}`);
-    if (!r.ok) return;
-    const d = await r.json();
-    this._ingest(d, false);
+    if (this.spans.some(([a, b]) => since >= a - 5 && until <= b + 5)) return;
+    const step = 3600;
+    for (let cur = since; cur < until; cur += step) {
+      const u = Math.min(until, cur + step);
+      if (this.spans.some(([a, b]) => cur >= a - 5 && u <= b + 5)) continue;
+      const rpc = newHttpBatchRpcSession(`${this.base}/api/live`, { binary: true });
+      const d = await rpc.getSlice({ since: cur, until: u, includeAc: false });
+      if (!d) return;
+      this._ingest(d, false);
+      if (Array.isArray(d.window) && d.window.length === 2 && Number.isFinite(d.window[0])) {
+        this._addSpan(Math.max(cur, d.window[0]), Math.min(u, d.window[1]));
+      }
+    }
   }
+
   _ingest(d, updateSince = true) {
     const localNow = Date.now() / 1000;
     this.now = (d.now ?? Date.now()) / 1000;
@@ -199,7 +234,47 @@ export class LiveFeed {
     else this.clockOffset = 0;
     if (updateSince) this.lastPollMs = Date.now();
     if (Array.isArray(d.ac) && d.ac.length) this.latest = d.ac;
-    if (Array.isArray(d.tracks)) {
+    if (d.trackHeaders instanceof Uint8Array && d.trackPoints instanceof Uint8Array) {
+      const baseSec = d.baseSec ?? 0;
+      const hdrs = LiveTrackHeader.array(d.trackHeaders);
+      const pts = LiveTrackPoint.array(d.trackPoints);
+      for (const h of hdrs) {
+        const hex = h.hex;
+        if (!hex || !h.pt_cnt) continue;
+        let e = this.ac.get(hex);
+        if (!e) {
+          e = { meta: { hex, type: h.type || null, reg: h.reg || null, flight: h.flight || null }, rows: [], _dirty: true };
+          this.ac.set(hex, e);
+        } else {
+          e.meta.type = h.type || e.meta.type;
+          e.meta.reg = h.reg || e.meta.reg;
+          e.meta.flight = h.flight || e.meta.flight;
+        }
+        const end = h.pt_off + h.pt_cnt;
+        for (let j = h.pt_off; j < end; j++) {
+          const ptCur = pts.cursor(j);
+          const t = baseSec + ptCur.t_ds / 10;
+          const last = e.rows[e.rows.length - 1];
+          if (last) {
+            if (Math.abs(t - last[0]) < 0.5) continue;
+            if (t < last[0] && e.rows.some((r) => Math.abs(r[0] - t) < 0.5)) continue;
+          }
+          const gs_d = ptCur.gs_d,
+            track_d = ptCur.track_d,
+            rate = ptCur.rate;
+          e.rows.push([
+            t,
+            ptCur.lat_e5 / 1e5,
+            ptCur.lon_e5 / 1e5,
+            ptCur.alt * FT,
+            gs_d === NULL_I16 ? null : (gs_d / 10) * KT,
+            track_d === NULL_I16 ? null : track_d / 10,
+            rate === NULL_I16 ? null : (rate * FT) / 60,
+          ]);
+          e._dirty = true;
+        }
+      }
+    } else if (Array.isArray(d.tracks)) {
       for (const tr of d.tracks) {
         if (!tr?.h || !Array.isArray(tr.p)) continue;
         let e = this.ac.get(tr.h);
@@ -246,8 +321,8 @@ export class LiveFeed {
     }
     for (const [hex, e] of this.ac) {
       if (e.rows.length > 1 && e._dirty) e.rows.sort((a, b) => a[0] - b[0]);
-      if (e.rows.length && e.rows[0][0] <= this.now - 43200) {
-        e.rows = e.rows.filter((x) => x[0] > this.now - 43200);
+      if (e.rows.length && e.rows[0][0] <= this.now - 86400) {
+        e.rows = e.rows.filter((x) => x[0] > this.now - 86400);
         e._dirty = true;
       }
       if (!e.rows.length) this.ac.delete(hex);
@@ -340,8 +415,8 @@ export class LiveFeed {
     if (this._minRaw.has(min)) return;
     const tStart = min * 60,
       tEnd = tStart + 60,
-      day0 = this._day0;
-    const idxBands = new Map(),
+      day0 = Math.floor(tStart / 86400) * 86400,
+      idxBands = new Map(),
       rawBands = new Map();
     for (const { fi, f, trk, fr } of this._trks) {
       if (trk.t1 < tStart || trk.t0 >= tEnd) continue;
@@ -374,23 +449,21 @@ export class LiveFeed {
     }
     const rawMap = new Map();
     for (const [band, rows] of rawBands) {
-      const buf = new ArrayBuffer(rows.length * 24),
-        dv = new DataView(buf);
+      const samples = SpdSample.alloc(rows.length);
       for (let i = 0; i < rows.length; i++) {
-        const o = i * 24,
-          r = rows[i];
-        dv.setUint32(o, r[0], true);
-        dv.setUint32(o + 4, r[1], true);
-        dv.setInt32(o + 8, r[2], true);
-        dv.setInt32(o + 12, r[3], true);
-        dv.setInt16(o + 16, Math.max(-32768, Math.min(32767, r[4])), true);
-        dv.setInt16(o + 18, Math.max(-32768, Math.min(32767, r[5])), true);
-        dv.setInt16(o + 20, Math.max(-32768, Math.min(32767, r[6])), true);
-        dv.setInt16(o + 22, Math.max(-32768, Math.min(32767, r[7])), true);
+        const r = rows[i];
+        const cur = samples.cursor(i);
+        cur.fi = r[0];
+        cur.t_ds = r[1];
+        cur.lat_e6 = r[2];
+        cur.lon_e6 = r[3];
+        cur.z = Math.max(-32768, Math.min(32767, r[4]));
+        cur.ve_dm = Math.max(-32768, Math.min(32767, r[5]));
+        cur.vn_dm = Math.max(-32768, Math.min(32767, r[6]));
+        cur.vz_dm = Math.max(-32768, Math.min(32767, r[7]));
       }
-      rawMap.set(band, new Uint8Array(buf));
+      rawMap.set(band, samples.bytes);
     }
-    this._minIdx.set(min, idxBands);
     this._minRaw.set(min, rawMap);
   }
   shard(min, band) {
@@ -402,7 +475,8 @@ export class LiveFeed {
     if (!this.ac.size) return null;
     this._ensureMin(min);
     const bytes = this._minRaw.get(min)?.get(band);
-    return bytes ? { bytes, flights: this._flights, day0: this._day0, ver: this.ver } : null;
+    const day0 = Math.floor((min * 60) / 86400) * 86400;
+    return bytes ? { bytes, flights: this._flights, day0, ver: this.ver } : null;
   }
 }
 export const liveFeed = new LiveFeed();

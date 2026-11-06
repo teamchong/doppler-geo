@@ -2,6 +2,7 @@ import { decodeFile, Recorder, wav } from './lib/media.js';
 import { FS } from './lib/spectro.js';
 import { search } from './lib/search.js';
 import { liveFeed } from './lib/data.js';
+import { newMessagePortRpcSession, transferArrayBuffer } from './lib/vendor/capnweb.js';
 
 const $ = (id) => document.getElementById(id);
 const status = (s) => ($('status').textContent = s);
@@ -16,22 +17,11 @@ const busy = (s) => {
   busyT = setTimeout(() => $('busy').classList.add('on'), 400);
 };
 
-// Analysis runs off the main thread.
+// Analysis runs off the main thread over a Cap'n Web MessagePort RPC session with zero-copy ArrayBuffer transfer.
 const worker = new Worker('./analyze.worker.js', { type: 'module' });
-let seq = 0;
-const pending = new Map();
-worker.onmessage = ({ data }) => {
-  const p = pending.get(data.id);
-  pending.delete(data.id);
-  data.error ? p.reject(new Error(data.error)) : p.resolve(data.result);
-};
-const call = (type, payload, transfer = []) =>
-  new Promise((resolve, reject) => {
-    const id = ++seq;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ id, type, payload }, transfer);
-  });
-
+const rpcChannel = new MessageChannel();
+worker.postMessage({ rpcPort: rpcChannel.port2 }, [rpcChannel.port2]);
+const analyzer = newMessagePortRpcSession(rpcChannel.port1);
 const map = L.map('map', { preferCanvas: true }).setView([20, 0], 2);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18,
@@ -561,7 +551,7 @@ function drawCands(d) {
       L.circleMarker([r.lat, r.lon], { radius: 3.5, color: '#38bdf8', weight: 1, fillOpacity: 0.7 })
         .addTo(layer)
         .bindTooltip(`Pass #${d.id} candidate: ${r.flights.map(label).join(' + ')}`);
-    return map.fitBounds(L.latLngBounds(list.map((r) => [r.lat, r.lon])), { padding: [24, 24] });
+    return map.fitBounds(L.latLngBounds(list.map((r) => [r.lat, r.lon])), { padding: [24, 24], animate: false });
   }
   if (!d.cands?.length) return;
   const best = d.cands[0];
@@ -600,7 +590,7 @@ function drawCands(d) {
     d.kind === 'located'
       ? [...best.hull, ...(best.paths?.flatMap((p) => p.path ?? []) ?? [])]
       : [...d.cands.slice(0, 5).flatMap((r) => r.hull), ...(best.paths?.flatMap((p) => p.path ?? []) ?? [])];
-  map.fitBounds(L.latLngBounds(boundsPts), { maxZoom: 13, padding: [32, 32] });
+  map.fitBounds(L.latLngBounds(boundsPts), { maxZoom: 13, padding: [32, 32], animate: false });
 }
 
 function pick(d, byUser) {
@@ -739,10 +729,11 @@ function renderDets() {
               .join(' · ');
             c.children[4].textContent = `Crosses ${crossInfo} (${strength(r, d.cands[0])})`;
             c.onclick = () =>
-              map.fitBounds(L.latLngBounds([...r.hull, ...(pPath?.path ?? r.paths?.flatMap((p) => p.path ?? []) ?? [])]), {
-                maxZoom: 14,
-                padding: [32, 32],
-              });
+        map.fitBounds(L.latLngBounds([...r.hull, ...(pPath?.path ?? r.paths?.flatMap((p) => p.path ?? []) ?? [])]), {
+          maxZoom: 14,
+          padding: [32, 32],
+          animate: false,
+        });
             sub.append(c);
           });
         }
@@ -751,7 +742,7 @@ function renderDets() {
         const mapBounds = map.getBounds?.() ?? null;
         const mapCenter = map.getCenter?.() ?? null;
         const inViewCnt = mapBounds ? baseOtherList.filter((r) => mapBounds.contains([r.lat, r.lon])).length : baseOtherList.length;
-        const mapZoomed = Boolean(mapBounds && mapCenter && ((map.getZoom?.() ?? 2) >= 4 || inViewCnt < baseOtherList.length));
+      const mapZoomed = Boolean(mapBounds && mapCenter && (map.getZoom?.() ?? 2) >= 3);
         const otherList = mapZoomed
           ? [...baseOtherList].sort((a, b) => {
               const aIn = mapBounds?.contains([a.lat, a.lon]) ? 0 : 1,
@@ -774,7 +765,7 @@ function renderDets() {
           c.innerHTML = `<b></b> <span></span> <span class="mute"></span>`;
           c.children[0].textContent = `#${i + 1 + ixHexes.size} ${label(f)}`;
           const tPass = passEpoch(r, d, -1);
-          const distKm = mapCenter ? L.latLng(r.lat, r.lon).distanceTo(mapCenter) / 1000 : null;
+          const distKm = mapZoomed && mapCenter ? L.latLng(r.lat, r.lon).distanceTo(mapCenter) / 1000 : null;
           const distTag = distKm != null ? ` · ${distKm < 10 ? distKm.toFixed(1) : Math.round(distKm)} km from map center` : '';
           c.children[1].textContent = `near ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)} (${fmt(tPass)})${distTag}`;
           c.children[2].textContent = isIx ? `· Pass #${d.id} only (no intersection with ${otherPasses})` : `· Pass #${d.id} candidate`;
@@ -783,7 +774,7 @@ function renderDets() {
               .addTo(layer)
               .bindTooltip(`Pass #${d.id} candidate: ${label(f)}`)
               .openTooltip();
-            map.fitBounds(L.latLngBounds(r.hull), { maxZoom: 12, padding: [32, 32] });
+          map.fitBounds(L.latLngBounds(r.hull), { maxZoom: 12, padding: [32, 32], animate: false });
           };
           sub.append(c);
         });
@@ -815,7 +806,7 @@ async function locate(samples, origin, myGen = runGen) {
           start = Math.max(0, end - winLen),
           sub = samples.slice(start, end),
           subOrigin = origin + start / FS;
-        const a = await call('analyze', { samples: sub }, [sub.buffer]);
+        const a = await analyzer.analyze(transferArrayBuffer(sub));
         if (myGen !== runGen) return;
         a.origin = subOrigin;
         merge(a.events, subOrigin, a, null);
@@ -824,7 +815,7 @@ async function locate(samples, origin, myGen = runGen) {
       }
     } else {
       const workBuf = src === 'rec' ? new Float32Array(samples) : samples;
-      const a = await call('analyze', { samples: workBuf }, [workBuf.buffer]);
+      const a = await analyzer.analyze(transferArrayBuffer(workBuf));
       if (myGen !== runGen) return;
       a.origin = origin;
       merge(a.events, origin, a, src === 'rec' && a.events.length ? { x: samples, t0: origin } : null);
@@ -1030,7 +1021,7 @@ function detectFileTime(f, dur = 0, forceModified = false) {
   if (!f) return null;
   const byName = parseFilenameTime(f.name || '');
   if (byName) return byName;
-  if (f.lastModified && (forceModified || Math.abs(Date.now() - f.lastModified) < 12 * 3600e3)) {
+  if (f.lastModified && (forceModified || Math.abs(Date.now() - f.lastModified) < 24 * 3600e3)) {
     const epoch = Math.round(f.lastModified / 1000 - (Number.isFinite(dur) && dur > 0 ? dur : 0));
     return { epoch, tol: 120, label: 'From file timestamp' };
   }

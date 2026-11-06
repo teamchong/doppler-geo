@@ -787,11 +787,11 @@
       <div class="source-grid">
         <div class="source-card active-source" id="card-two" data-source="two">
           <div class="source-top">
-            <span class="tag">Example 1 · 2 Planes</span>
+            <span class="tag">Example 1 · Synthetic 2-Plane Audio + Real ADS-B Tracks</span>
             <span class="ex-meta">5:00 · Cranfield, UK</span>
           </div>
           <h3>Two planes over English farmland</h3>
-          <p class="desc">Two real flights near Cranfield, UK: a Cessna 152 (<code>G-GFIG</code>) and a Westland Wasp helicopter (<code>G-RIMM</code>) flying past 4 minutes apart. Because 2 planes cross paths over the same spot, they pinpoint the location to within 40 meters out of 1,147 flights worldwide.</p>
+          <p class="desc">Synthesized 2-plane Doppler audio (<code>public/lib/sim.js</code>) over two real ADS-B flight tracks near Cranfield, UK: a Cessna 152 (<code>G-GFIG</code>) and a Westland Wasp helicopter (<code>G-RIMM</code>) flying past 4 minutes apart. Because 2 planes cross paths over the same spot, they pinpoint the location to within 40 meters out of 1,147 flights worldwide.</p>
           <div class="row">
             <button class="go" id="ex-two">Locate Example 1</button>
             <button type="button" class="chip-btn" data-audio="exa-two" data-seek="52">Plane 1 (0:52)</button>
@@ -800,6 +800,7 @@
           <div class="source-detail">
             <audio controls preload="none" src="./examples/2025-07-18/two-planes-sim.mp3" id="exa-two"></audio>
             <p class="ans" id="ans-two" hidden></p>
+            <p class="mute small" style="margin:0">Synthetic 2-Plane Audio + Real ADS-B Tracks (<code>public/lib/sim.js</code>)</p>
           </div>
         </div>
 
