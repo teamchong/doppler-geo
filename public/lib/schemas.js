@@ -138,13 +138,9 @@ export function packTrackBundle(headers, points, baseSec) {
 export function unpackTrackBundle(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.byteLength < TrackBundle.size) {
-    return { baseSec: 0, hdrs: LiveTrackHeader.alloc(0), pts: LiveTrackPoint.alloc(0), ptCnt: 0 };
+    return { baseSec: 0, hdrs: LiveTrackHeader.from(0), pts: LiveTrackPoint.from(0), ptCnt: 0 };
   }
-  const arr = TrackBundle.array(bytes);
-  if (!arr.length) {
-    return { baseSec: 0, hdrs: LiveTrackHeader.alloc(0), pts: LiveTrackPoint.alloc(0), ptCnt: 0 };
-  }
-  const b = arr.at(0);
+  const b = TrackBundle.view(bytes);
   const hdrs = b.headers;
   const pts = b.points;
   return { baseSec: b.base_sec, hdrs, pts, ptCnt: pts.length };
@@ -194,8 +190,8 @@ export function packAnalysis(res) {
     totalPts += e.pts?.length ?? 0;
     totalCurve += e.curve?.length ?? 0;
   }
-  const passesView = DetectedPass.alloc(evs.length);
-  const tfView = TimeFreqPoint.alloc(totalPts + totalCurve);
+  const passesView = DetectedPass.from(evs.length);
+  const tfView = TimeFreqPoint.from(totalPts + totalCurve);
   const pCur = passesView.cursor();
   const tfCur = tfView.cursor();
   let ptCursor = 0;
@@ -249,7 +245,7 @@ export function packAnalysis(res) {
 }
 
 export function unpackAnalysis({ meta, img }) {
-  const s = SpectrogramBundle.array(meta).at(0);
+  const s = SpectrogramBundle.view(meta);
   const passesView = s.passes;
   const tfView = s.tf_points;
   const pCur = passesView.cursor();

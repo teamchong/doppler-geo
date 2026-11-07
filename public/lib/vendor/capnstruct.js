@@ -231,14 +231,14 @@ function allocTail(v, bytes, align) {
         v._d = root._d = m._d;
         return p;
     }
-    const d = root._k(), cur = root._tl ?? root._o + root.byteLength, p = al(cur, align), end = p + bytes;
+    const d = root._k(), cur = root._tl ?? root._o + al(root.byteLength, 8), p = al(cur, align), end = p + bytes;
     if (end > d.byteLength) {
         if (m) {
             m.grow(Math.ceil((end - d.byteLength) / 65536));
             root._d = new DataView(m.buffer);
         }
         else {
-            const nb = new ArrayBuffer(Math.max(end, d.byteLength * 2, 64));
+            const nb = new ArrayBuffer(Math.max(al(end, 8), d.byteLength * 2, 64));
             new Uint8Array(nb).set(u8s(d, 0, cur));
             root._d = new DataView(nb);
         }
@@ -281,9 +281,9 @@ function mutVar(v, off, base, count, elSize, align) {
         }
         st = allocTail(root, bytes, align);
         d = v._d = root._d;
+        if (root.def && off === root._b + root.def._fv && st - base !== al(root.byteLength, 8))
+            root._dirty = true;
     }
-    if (root.def && off === root._b + root.def._fv && st - base !== oldP)
-        root._dirty = true;
     if (bytes)
         u8s(d, st, bytes).fill(0);
     setDesc(off, count ? st - base : 0, count, d);
@@ -611,6 +611,19 @@ class MemView {
         const used = this.usedByteLength;
         return used > 0 ? Math.min(1, this.deadByteLength / used) : 0;
     }
+    /** Returns a structured inspection summary (`{ schema, stride, rowCount, usedByteLength, deadByteLength, compactionRatio, data }`). */
+    toDebugObject() {
+        const a = this, isArr = 'length' in a;
+        return {
+            schema: this.def.name || 'AnonStruct',
+            stride: isArr ? a.stride : this.def.size,
+            rowCount: isArr ? a.length : 1,
+            usedByteLength: this.usedByteLength,
+            deadByteLength: this.deadByteLength,
+            compactionRatio: this.compactionRatio,
+            data: isArr ? a.toObjects() : a.toObject(),
+        };
+    }
     /** Wire-ready `Uint8Array` view over the underlying bytes (automatically compacts dead tail bytes if dirty). */
     /** Re-packs only live fields and tail data into a tight `Uint8Array` and rebinds this view in-place. */
     compact() {
@@ -636,8 +649,17 @@ class MemView {
     get bytes() {
         if (this._dirty || this._dead)
             return this.compact();
-        const d = this._k();
-        return u8s(d, this._o, Math.max(this.byteLength, (this._tl ?? this._o + this.byteLength) - this._o));
+        const d = this._k(), rawEnd = Math.max(this.byteLength, (this._tl ?? this._o + this.byteLength) - this._o), end = !this._m && this._tl !== undefined ? Math.min(d.byteLength - this._o, al(rawEnd, 8)) : rawEnd;
+        if (this.byteLength && this.def._fv >= 0 && d.getUint32(this._b + this.def._fv, true) < this.byteLength) {
+            const ts = al(this.byteLength, 8);
+            if (end >= ts) {
+                if (d.getUint32(this._b + this.def._fv + 4, true))
+                    d.setUint32(this._b + this.def._fv + 4, ts | 1, true);
+                else
+                    d.setUint32(this._b + this.def._fv, ts, true);
+            }
+        }
+        return u8s(d, this._o, end);
     }
 }
 export class StructViewBase extends MemView {
@@ -671,9 +693,10 @@ export class StructViewBase extends MemView {
         return readPlain(this);
     }
 }
+const kInspect = Symbol.for('nodejs.util.inspect.custom');
 StructViewBase.prototype.at = StructViewBase.prototype.seek;
 StructViewBase.prototype.setAll = StructViewBase.prototype.set;
-StructViewBase.prototype.toJSON = StructViewBase.prototype.toObject;
+StructViewBase.prototype.toJSON = StructViewBase.prototype[kInspect] = StructViewBase.prototype.toObject;
 function normOpts(b = 0, c, bo, s) {
     if (typeof b === 'number')
         return { o: b, c, b: bo, s };
@@ -881,7 +904,7 @@ export class StructArrayView extends MemView {
         };
     }
 }
-StructArrayView.prototype.toJSON = StructArrayView.prototype.toObjects;
+StructArrayView.prototype.toJSON = StructArrayView.prototype[kInspect] = StructArrayView.prototype.toObjects;
 function colDesc(a, k) {
     const lay = a.def.fields[k];
     if (!lay || lay.desc.kind !== 'primitive' || !lay.desc._C) {
@@ -1099,6 +1122,39 @@ export class StructDef {
         initNulls(this, a._d, 0, count);
         return a;
     }
+    /**
+     * Universal 1-step constructor:
+     * - Given an array/iterable of plain JS objects, packs them and returns a live `StructArrayView<F>`.
+     * - Given a `Uint8Array`, `ArrayBuffer`, `SharedArrayBuffer`, `DataView`, `WebAssembly.Memory`, or `WasmArena`, wraps it with zero copying.
+     * - Given a row count (`number`), allocates a zero-initialized `StructArrayView<F>`.
+     */
+    from(sourceOrRows) {
+        if (typeof sourceOrRows === 'number')
+            return this.alloc(sourceOrRows);
+        if (ArrayBuffer.isView(sourceOrRows) ||
+            sourceOrRows instanceof ArrayBuffer ||
+            (typeof SharedArrayBuffer !== 'undefined' && sourceOrRows instanceof SharedArrayBuffer) ||
+            isMemOrArena(sourceOrRows)) {
+            return this.array(sourceOrRows);
+        }
+        const rows = Array.isArray(sourceOrRows) ? sourceOrRows : Array.from(sourceOrRows);
+        return this.array(this.pack(rows));
+    }
+    /**
+     * Allocates or packs a `StructArrayView<F>` backed by a `SharedArrayBuffer` (with `ArrayBuffer` fallback)
+     * for zero-copy Web Worker `worker.postMessage(rows.buffer)` state sharing.
+     */
+    shared(rowsOrCount) {
+        const BufCtor = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : ArrayBuffer;
+        if (typeof rowsOrCount === 'number') {
+            const a = this.array(new BufCtor(rowsOrCount * this.size), 0, rowsOrCount);
+            initNulls(this, a._d, 0, rowsOrCount);
+            return a;
+        }
+        const packed = this.pack(rowsOrCount), sb = new BufCtor(packed.byteLength);
+        new Uint8Array(sb).set(packed);
+        return this.array(sb);
+    }
     /** Packs an array of plain JavaScript objects into an 8-byte-aligned `Uint8Array`. */
     pack(rows) {
         return pack(this, rows);
@@ -1127,7 +1183,7 @@ export function pack(def, rows) {
     const n = rows.length;
     const st = def.size;
     const tb = n * st;
-    const ts = def._fv >= 0 ? al(tb + 1, 8) : tb;
+    const ts = def._fv >= 0 ? al(tb, 8) : tb;
     ensureScratch(ts + n * 64 + 64);
     sU8.fill(0, 0, ts);
     initNulls(def, sDv, 0, n, st);
@@ -1167,3 +1223,30 @@ export function defineStruct(nameOrFields, maybeFields) {
 }
 /** Alias for `defineStruct`. */
 export const struct = defineStruct;
+const _dtf = {
+    header(x) {
+        if (!(x instanceof MemView))
+            return null;
+        const n = x.def?.name || 'Struct';
+        if ('length' in x)
+            return ['span', {}, `${n}[${x.length}] (${x.usedByteLength} B)`];
+        const ks = Object.keys(x);
+        return ['span', {}, `${n} { ${ks.slice(0, 4).map((k) => `${k}: ${JSON.stringify(x[k])}`).join(', ')}${ks.length > 4 ? ', ...' : ''} }`];
+    },
+    hasBody(x) {
+        return x instanceof MemView;
+    },
+    body(x) {
+        return ['div', {}, ['object', { object: 'length' in x ? x.toObjects() : x.toObject() }]];
+    },
+};
+/** Registers a lazy Chrome/Edge/Firefox DevTools custom formatter (`globalThis.devtoolsFormatters`) for `StructView` and `StructArrayView`. */
+export function installDevtoolsFormatter() {
+    const g = globalThis;
+    const list = (g.devtoolsFormatters ??= []);
+    if (!list.includes(_dtf))
+        list.push(_dtf);
+    return _dtf;
+}
+if (typeof window !== 'undefined')
+    installDevtoolsFormatter();
