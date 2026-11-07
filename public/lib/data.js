@@ -28,7 +28,7 @@ function limitFetch(fn) {
         if (fetchQueue.length) fetchQueue.shift()();
       });
     };
-    if (activeFetches < 8) run();
+    if (activeFetches < 32) run();
     else fetchQueue.push(run);
   });
 }
@@ -38,6 +38,14 @@ export function rangeGunzip(url, off, len) {
   if (!chunkCache.has(key)) {
     chunkCache.set(key, (async () => {
       let body;
+      if (url.includes('examples/') && !whole.has(url)) {
+        whole.set(
+          url,
+          fetch(url)
+            .then((r) => (r.ok ? r.arrayBuffer() : null))
+            .catch(() => null),
+        );
+      }
       if (whole.has(url)) {
         const w = await whole.get(url);
         if (w) body = w.slice(off, off + len);

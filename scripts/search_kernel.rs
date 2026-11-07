@@ -109,8 +109,6 @@ pub struct IOHeader {
 
 #[derive(Copy, Clone)]
 struct SampleState {
-    fid: u32,
-    hex_id: u32,
     t: f64,
     lat: f64,
     lon: f64,
@@ -125,7 +123,9 @@ struct CellEntry {
     start: f64,
     lat: f64,
     lon: f64,
-    s: SampleState,
+    fid: u32,
+    hex_id: u32,
+    state_idx: u32,
 }
 
 #[derive(Clone)]
@@ -133,11 +133,19 @@ struct Combo {
     n: usize,
     fids: [u32; MAX_PASSES],
     hex_ids: [u32; MAX_PASSES],
-    ss: [SampleState; MAX_PASSES],
+    state_ids: [u32; MAX_PASSES],
     start: f64,
     lat: f64,
     lon: f64,
     pre: f64,
+}
+
+#[inline(always)]
+fn block_hash(by: i32, bx: i32, bt: i32) -> usize {
+    let h = (by as u32 as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        ^ (bx as u32 as u64).wrapping_mul(0xBF58476D1CE4E5B9)
+        ^ (bt as u32 as u64).wrapping_mul(0x94D049BB133111EB);
+    ((h ^ (h >> 32)) as usize) & 0x3FFFFF
 }
 
 struct CellMap {
@@ -148,6 +156,9 @@ struct CellMap {
     mask: usize,
     entries: Vec<CellEntry>,
     next: Vec<u32>,
+    block_self: Vec<u64>,
+    block_near: Vec<u64>,
+    block_dirty: Vec<usize>,
 }
 
 impl CellMap {
@@ -161,6 +172,9 @@ impl CellMap {
             mask: sz - 1,
             entries: Vec::with_capacity(entry_cap),
             next: Vec::with_capacity(entry_cap),
+            block_self: vec![0u64; 65536],
+            block_near: vec![0u64; 65536],
+            block_dirty: Vec::with_capacity(8192),
         }
     }
 
@@ -174,7 +188,49 @@ impl CellMap {
         self.used_slots.clear();
         self.entries.clear();
         self.next.clear();
+        for &w in &self.block_dirty {
+            self.block_self[w] = 0;
+            self.block_near[w] = 0;
+        }
+        self.block_dirty.clear();
     }
+
+    #[inline(always)]
+    fn mark_block(&mut self, cy: i32, cx: i32, bt: i32) {
+        let by = cy >> 2;
+        let bx = cx >> 2;
+        let sb = block_hash(by, bx, bt);
+        let sw = sb >> 6;
+        let smask = 1u64 << (sb & 63);
+        if (self.block_self[sw] & smask) != 0 {
+            return;
+        }
+        if self.block_self[sw] == 0 && self.block_near[sw] == 0 {
+            self.block_dirty.push(sw);
+        }
+        self.block_self[sw] |= smask;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for dt in -1..=1 {
+                    let nb = block_hash(by + dy, bx + dx, bt + dt);
+                    let nw = nb >> 6;
+                    if self.block_self[nw] == 0 && self.block_near[nw] == 0 {
+                        self.block_dirty.push(nw);
+                    }
+                    self.block_near[nw] |= 1u64 << (nb & 63);
+                }
+            }
+        }
+
+    }
+
+    #[inline(always)]
+    fn has_near_spacetime(&self, cy: i32, cx: i32, bt: i32) -> bool {
+        let b = block_hash(cy >> 2, cx >> 2, bt);
+        (self.block_near[b >> 6] & (1u64 << (b & 63))) != 0
+    }
+
+
 
     #[inline(always)]
     fn hash(k: u64) -> usize {
@@ -220,7 +276,7 @@ impl CellMap {
                 let mut idx = self.head[slot];
                 while idx != u32::MAX {
                     let e = &self.entries[idx as usize];
-                    if e.s.hex_id == entry.s.hex_id && (e.start - entry.start).abs() < 6.0 {
+                    if e.hex_id == entry.hex_id && (e.start - entry.start).abs() < 6.0 {
                         return false;
                     }
                     idx = self.next[idx as usize];
@@ -245,6 +301,9 @@ impl CellMap {
                 self.next.push(u32::MAX);
                 self.head[slot] = new_idx;
                 self.tail[slot] = new_idx;
+                let (cy, cx) = unpack_cell(key);
+                let bt = (entry.start * (1.0 / 12.0)).floor() as i32;
+                self.mark_block(cy, cx, bt);
                 return true;
             }
             slot = (slot + 1) & self.mask;
@@ -278,6 +337,7 @@ struct Arena {
     out_hits: Vec<OutHit>,
     out_shortlist: Vec<OutShortlist>,
     maps: Vec<CellMap>,
+    states: Vec<SampleState>,
 }
 
 static mut ARENA: Option<Box<Arena>> = None;
@@ -364,8 +424,25 @@ fn lin_score(pts: &[QpPoint], s: &SampleState, lat: f64, lon: f64, start: f64) -
     (err / (limit as f64)).sqrt() / f0
 }
 
-fn lookup_pass(
-    map: &mut CellMap,
+#[inline(always)]
+fn coarse_coords(lat: f64, lon: f64, nom_start: f64) -> (i32, i32, i32) {
+    let cy = (lat * (MY / 2200.0)).floor() as i32;
+    let cos_l = (lat * (PI / 180.0)).cos().max(0.1);
+    let cx = (lon * (MY * cos_l / 2200.0)).floor() as i32;
+    let ct = (nom_start / 12.0).floor() as i32;
+    (cy, cx, ct)
+}
+
+#[inline(always)]
+fn coarse_hash(cy: i32, cx: i32, ct: i32) -> usize {
+    let h = (cy as u32 as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        ^ (cx as u32 as u64).wrapping_mul(0xBF58476D1CE4E5B9)
+        ^ (ct as u32 as u64).wrapping_mul(0x94D049BB133111EB);
+    ((h ^ (h >> 32)) as usize) & 0x1FFFFF
+}
+
+fn collect_pass_candidates(
     samples: &[SpdSample],
     shards: &[ShardDesc],
     shard_lookup: &std::collections::HashMap<(i32, i32), Vec<usize>>,
@@ -374,17 +451,21 @@ fn lookup_pass(
     s0: f64,
     s1: f64,
     pass_idx: u32,
+    need_cells: bool,
     shortlist: &mut [OutShortlist],
     shortlist_seen: &mut [bool],
+    candidates: &mut Vec<(u32, u32, f64)>,
+    coarse_bits: &mut [u64],
 ) {
-    map.clear();
+    candidates.clear();
+    coarse_bits.fill(0);
     let tv = f64::max(22.0, 0.5 * e.v);
     let tpad = 5.0;
     let m_min = ((s0 + e.tc - tpad - 25.0) / 60.0).floor() as i32;
     let m_max = ((s1 + e.tc + tpad + 60.0) / 60.0).floor() as i32;
     let b_min = i32::max(3, ((e.v - tv) / 4.0).floor() as i32);
     let b_max = i32::min(60, ((e.v + tv) / 4.0).floor() as i32);
-    let d_lo = 0.25 * e.d - 150.0;
+    let d_lo = (0.25 * e.d - 150.0).max(0.0);
     let d_hi = 3.5 * e.d + 600.0;
 
     for m in m_min..=m_max {
@@ -394,7 +475,7 @@ fn lookup_pass(
                 let sh = &shards[sh_idx];
                 let start_i = sh.sample_off as usize;
                 let end_i = start_i + (sh.sample_cnt as usize);
-                for raw in &samples[start_i..end_i] {
+                for (local_i, raw) in samples[start_i..end_i].iter().enumerate() {
                     let ve = (raw.ve_dm as f64) * 0.1;
                     let vn = (raw.vn_dm as f64) * 0.1;
                     let vz = (raw.vz_dm as f64) * 0.1;
@@ -406,105 +487,208 @@ fn lookup_pass(
                     if s_t + 5.0 - 30.0 / C - e.tc < s0 - tpad || s_t - 5.0 - d_hi / C - e.tc > s1 + tpad {
                         continue;
                     }
+                    let z_c = f64::max(30.0, raw.z as f64);
+                    if z_c > d_hi {
+                        continue;
+                    }
+                    let d_min = z_c.max(d_lo);
+                    let max_h = 32.0 * 125.0_f64;
+                    let d_max = (max_h * max_h + z_c * z_c).sqrt().min(d_hi);
+                    if s_t + 5.0 - d_min / C - e.tc < s0 - tpad || s_t - 5.0 - d_max / C - e.tc > s1 + tpad {
+                        continue;
+                    }
                     let fid = sh.fid_base + raw.fi;
                     let hex_id = fid_to_hex.get(fid as usize).copied().unwrap_or(fid);
                     let s_lat = (raw.lat_e6 as f64) * 1e-6;
                     let s_lon = (raw.lon_e6 as f64) * 1e-6;
-                    let s_z = raw.z as f64;
-                    let z_c = f64::max(30.0, s_z);
-                    let lat_rad = s_lat * (PI / 180.0);
-                    let cos_s_lat = lat_rad.cos();
-                    let sin_s_lat = lat_rad.sin() * (PI / 180.0);
-                    let px = -vn / hs;
-                    let py = ve / hs;
-                    let kx = 1.0 / (MY * cos_s_lat);
-
-                    let mut valid_h: [(f64, f64); 33] = [(0.0, 0.0); 33];
-                    let mut n_valid_h = 0usize;
-                    for hi in 0..33 {
-                        let h = (hi as f64) * 125.0;
-                        let d = (h * h + z_c * z_c).sqrt();
-                        if d >= d_lo && d <= d_hi {
-                            valid_h[n_valid_h] = (h, d);
-                            n_valid_h += 1;
-                        }
-                    }
-                    if n_valid_h == 0 {
-                        continue;
-                    }
-                    let mut matched_time = false;
-                    for dt in [-5.0, 0.0, 5.0] {
-                        let st = s_t + dt;
-                        let s_lat_dt = s_lat + (vn * dt) / MY;
-                        let s_lon_dt = s_lon + (ve * dt) * kx;
-                        let state = SampleState {
+                    let dv = (hs - e.v).abs();
+                    let hid = hex_id as usize;
+                    if hid < shortlist.len() && (!shortlist_seen[hid] || dv < shortlist[hid].dv) {
+                        shortlist_seen[hid] = true;
+                        shortlist[hid] = OutShortlist {
                             fid,
-                            hex_id,
-                            t: st,
-                            lat: s_lat_dt,
-                            lon: s_lon_dt,
-                            z: s_z,
-                            ve,
-                            vn,
-                            vz,
+                            _pad: pass_idx,
+                            lat: s_lat,
+                            lon: s_lon,
+                            start: (s_t - e.d / C - e.tc).clamp(s0 - tpad, s1 + tpad),
+                            dv,
                         };
-                        let mut last_key_neg = u64::MAX;
-                        let mut last_key_pos = u64::MAX;
-                        for &(h, d) in &valid_h[..n_valid_h] {
-                            let start = st - d / C - e.tc;
-                            if start < s0 - tpad || start > s1 + tpad {
-                                continue;
-                            }
-                            matched_time = true;
-                            let sides: &[f64] = if h == 0.0 { &[1.0] } else { &[-1.0, 1.0] };
-                            for &side in sides {
-                                let lat = s_lat_dt + (side * h * py) / MY;
-                                let lon = s_lon_dt + side * h * px * kx;
-                                let cos_lat = cos_s_lat - sin_s_lat * (lat - s_lat);
-                                let cy = ((lat * MY) / CELL).floor() as i32;
-                                let cx = ((lon * MY * cos_lat) / CELL).floor() as i32;
-                                let key = pack_cell(cy, cx);
-                                if side < 0.0 {
-                                    if key == last_key_neg {
-                                        continue;
-                                    }
-                                    last_key_neg = key;
-                                } else {
-                                    if key == last_key_pos {
-                                        continue;
-                                    }
-                                    last_key_pos = key;
-                                }
-                                let entry = CellEntry {
-                                    start,
-                                    lat,
-                                    lon,
-                                    s: state,
-                                };
-                                map.insert_if_new(key, entry);
-                            }
-                        }
                     }
-                    if matched_time {
-                        let dv = (hs - e.v).abs();
-                        let hid = hex_id as usize;
-                        if hid < shortlist.len() && (!shortlist_seen[hid] || dv < shortlist[hid].dv) {
-                            shortlist_seen[hid] = true;
-                            shortlist[hid] = OutShortlist {
-                                fid,
-                                _pad: pass_idx,
-                                lat: s_lat,
-                                lon: s_lon,
-                                start: (s_t - e.d / C - e.tc).clamp(s0 - tpad, s1 + tpad),
-                                dv,
-                            };
+                    if need_cells {
+                        let nom_start = s_t - e.d / C - e.tc;
+                        let lat_rad = s_lat * (PI / 180.0);
+                        let cos_s_lat = lat_rad.cos().max(0.1);
+                        let px = -vn / hs;
+                        let py = ve / hs;
+                        let kx = 1.0 / (MY * cos_s_lat);
+                        let h_mid = (0.5 * (d_min + d_max)).min(1800.0);
+                        for side in [-1.0, 1.0] {
+                            let m_lat = s_lat + (side * h_mid * py) / MY;
+                            let m_lon = s_lon + side * h_mid * px * kx;
+                            let (cy, cx, ct) = coarse_coords(m_lat, m_lon, nom_start);
+                            for dy in -1..=1 {
+                                for dx in -1..=1 {
+                                    for dt_c in -1..=1 {
+                                        let bit = coarse_hash(cy + dy, cx + dx, ct + dt_c);
+                                        coarse_bits[bit >> 6] |= 1u64 << (bit & 63);
+                                    }
+                                }
+                            }
                         }
+                        candidates.push(((start_i + local_i) as u32, fid, s_t));
                     }
                 }
             }
         }
     }
 }
+
+fn expand_pass_cells(
+    map: &mut CellMap,
+    prev_map: Option<&CellMap>,
+    states: &mut Vec<SampleState>,
+    samples: &[SpdSample],
+    fid_to_hex: &[u32],
+    e: &PassDesc,
+    s0: f64,
+    s1: f64,
+    candidates: &[(u32, u32, f64)],
+    other_bits: &[Vec<u64>],
+    self_p: usize,
+) {
+    map.clear();
+    let tpad = 5.0;
+    let d_lo = 0.25 * e.d - 150.0;
+    let d_hi = 3.5 * e.d + 600.0;
+
+    for &(samp_idx, fid, s_t) in candidates {
+        let raw = &samples[samp_idx as usize];
+        let s_lat = (raw.lat_e6 as f64) * 1e-6;
+        let s_lon = (raw.lon_e6 as f64) * 1e-6;
+        let nom_start = s_t - e.d / C - e.tc;
+        let (cy_c, cx_c, ct_c) = coarse_coords(s_lat, s_lon, nom_start);
+        let bit = coarse_hash(cy_c, cx_c, ct_c);
+        let w = bit >> 6;
+        let mask = 1u64 << (bit & 63);
+        let mut any_other = false;
+        for (q, ob) in other_bits.iter().enumerate() {
+            if q != self_p && (ob[w] & mask) != 0 {
+                any_other = true;
+                break;
+            }
+        }
+        if !any_other {
+            continue;
+        }
+        let ve = (raw.ve_dm as f64) * 0.1;
+        let vn = (raw.vn_dm as f64) * 0.1;
+        let vz = (raw.vz_dm as f64) * 0.1;
+        let hs = (ve * ve + vn * vn).sqrt();
+        let hex_id = fid_to_hex.get(fid as usize).copied().unwrap_or(fid);
+        let s_z = raw.z as f64;
+        let z_c = f64::max(30.0, s_z);
+        let lat_rad = s_lat * (PI / 180.0);
+        let cos_s_lat = lat_rad.cos();
+        let sin_s_lat = lat_rad.sin() * (PI / 180.0);
+        let px = -vn / hs;
+        let py = ve / hs;
+        let kx = 1.0 / (MY * cos_s_lat);
+
+        let mut valid_h: [(f64, f64); 33] = [(0.0, 0.0); 33];
+        let mut n_valid_h = 0usize;
+        for hi in 0..33 {
+            let h = (hi as f64) * 125.0;
+            let d = (h * h + z_c * z_c).sqrt();
+            if d >= d_lo && d <= d_hi {
+                valid_h[n_valid_h] = (h, d);
+                n_valid_h += 1;
+            }
+        }
+        if n_valid_h == 0 {
+            continue;
+        }
+        for dt in [-5.0, 0.0, 5.0] {
+            let st = s_t + dt;
+            let s_lat_dt = s_lat + (vn * dt) / MY;
+            let s_lon_dt = s_lon + (ve * dt) * kx;
+            let state = SampleState {
+                t: st,
+                lat: s_lat_dt,
+                lon: s_lon_dt,
+                z: s_z,
+                ve,
+                vn,
+                vz,
+            };
+            let mut state_idx = u32::MAX;
+            let mut last_key_neg = u64::MAX;
+            let mut last_key_pos = u64::MAX;
+            for &(h, d) in &valid_h[..n_valid_h] {
+                let start = st - d / C - e.tc;
+                if start < s0 - tpad || start > s1 + tpad {
+                    continue;
+                }
+                let sides: &[f64] = if h == 0.0 { &[1.0] } else { &[-1.0, 1.0] };
+                for &side in sides {
+                    let lat = s_lat_dt + (side * h * py) / MY;
+                    let lon = s_lon_dt + side * h * px * kx;
+                    let cos_lat = cos_s_lat - sin_s_lat * (lat - s_lat);
+                    if let Some(pm) = prev_map {
+                        let cy = ((lat * MY) / CELL).floor() as i32;
+                        let cx = ((lon * MY * cos_lat) / CELL).floor() as i32;
+                        let bt = (start * (1.0 / 12.0)).floor() as i32;
+                        if !pm.has_near_spacetime(cy, cx, bt) {
+                            continue;
+                        }
+                    } else {
+                        let (cy_c, cx_c, ct_c) = coarse_coords(lat, lon, start);
+                        let cbit = coarse_hash(cy_c, cx_c, ct_c);
+                        let cw = cbit >> 6;
+                        let cmask = 1u64 << (cbit & 63);
+                        let mut cell_ok = false;
+                        for (q, ob) in other_bits.iter().enumerate() {
+                            if q != self_p && (ob[cw] & cmask) != 0 {
+                                cell_ok = true;
+                                break;
+                            }
+                        }
+                        if !cell_ok {
+                            continue;
+                        }
+                    }
+                    let cy = ((lat * MY) / CELL).floor() as i32;
+                    let cx = ((lon * MY * cos_lat) / CELL).floor() as i32;
+                    let key = pack_cell(cy, cx);
+                    if side < 0.0 {
+                        if key == last_key_neg {
+                            continue;
+                        }
+                        last_key_neg = key;
+                    } else {
+                        if key == last_key_pos {
+                            continue;
+                        }
+                        last_key_pos = key;
+                    }
+                    if state_idx == u32::MAX {
+                        state_idx = states.len() as u32;
+                        states.push(state);
+                    }
+                    let entry = CellEntry {
+                        start,
+                        lat,
+                        lon,
+                        fid,
+                        hex_id,
+                        state_idx,
+                    };
+                    map.insert_if_new(key, entry);
+                }
+            }
+        }
+    }
+}
+
 fn refresh_ptrs(arena: &mut Arena) {
     arena.header.samples_ptr = arena.samples.as_ptr() as u32;
     arena.header.shards_ptr = arena.shards.as_ptr() as u32;
@@ -632,7 +816,7 @@ pub extern "C" fn init_arena(max_samples: usize, max_shards: usize, max_fids: us
         };
         max_fids.saturating_mul(MAX_PASSES)
     ];
-    let maps = (0..MAX_PASSES).map(|_| CellMap::with_capacity(18, 65536)).collect();
+    let maps = (0..MAX_PASSES).map(|_| CellMap::with_capacity(20, 262144)).collect();
 
     let header = IOHeader {
         num_samples: 0,
@@ -665,6 +849,7 @@ pub extern "C" fn init_arena(max_samples: usize, max_shards: usize, max_fids: us
         out_hits,
         out_shortlist,
         maps,
+        states: Vec::with_capacity(65536),
     });
     refresh_ptrs(&mut boxed);
     let ptr = &mut boxed.header as *mut IOHeader;
@@ -737,15 +922,18 @@ pub extern "C" fn run_search() {
             })
     .collect();
     let mut shortlist_seen: Vec<Vec<bool>> = (0..p_cnt).map(|_| vec![false; num_hexes]).collect();
+    arena.states.clear();
     let mut set_hits: Vec<Vec<Combo>> = (0..sets.len()).map(|_| Vec::new()).collect();
     const CH: f64 = 600.0;
     for sp in spans {
         let mut a = sp.sp0;
         while a < sp.sp1 {
             let b = f64::min(sp.sp1, a + CH);
+            let need_cells = p_cnt >= 2;
+            let mut pass_cands: Vec<Vec<(u32, u32, f64)>> = (0..p_cnt).map(|_| Vec::with_capacity(4096)).collect();
+            let mut coarse_bits: Vec<Vec<u64>> = (0..p_cnt).map(|_| vec![0u64; 32768]).collect();
             for p in 0..p_cnt {
-                lookup_pass(
-                    &mut arena.maps[p],
+                collect_pass_candidates(
                     samples,
                     shards,
                     &shard_lookup,
@@ -754,9 +942,31 @@ pub extern "C" fn run_search() {
                     a,
                     b,
                     p as u32,
+                    need_cells,
                     &mut shortlists[p],
                     &mut shortlist_seen[p],
+                    &mut pass_cands[p],
+                    &mut coarse_bits[p],
                 );
+            }
+            if need_cells {
+                for p in 0..p_cnt {
+                    let (left, right) = arena.maps.split_at_mut(p);
+                    let prev_map = if p_cnt == 2 && p == 1 { Some(&left[0]) } else { None };
+                    expand_pass_cells(
+                        &mut right[0],
+                        prev_map,
+                        &mut arena.states,
+                        samples,
+                        fid_to_hex,
+                        &passes[p],
+                        a,
+                        b,
+                        &pass_cands[p],
+                        &coarse_bits,
+                        p,
+                    );
+                }
             }
 
             if p_cnt >= 2 {
@@ -773,21 +983,27 @@ pub extern "C" fn run_search() {
                     for &slot in &m0.used_slots {
                         let k = m0.keys[slot];
                         let (cy, cx) = unpack_cell(k);
+                        let m1_check = &arena.maps[ix[1]];
                         combos.clear();
                         let mut idx0 = m0.head[slot];
                         while idx0 != u32::MAX {
                             let e0 = &m0.entries[idx0 as usize];
+                            let bt0 = (e0.start * (1.0 / 12.0)).floor() as i32;
+                            if !m1_check.has_near_spacetime(cy, cx, bt0) {
+                                idx0 = m0.next[idx0 as usize];
+                                continue;
+                            }
                             let mut fids = [0u32; MAX_PASSES];
                             let mut hex_ids = [0u32; MAX_PASSES];
-                            let mut ss = [e0.s; MAX_PASSES];
-                            fids[0] = e0.s.fid;
-                            hex_ids[0] = e0.s.hex_id;
-                            ss[0] = e0.s;
+                            let mut state_ids = [0u32; MAX_PASSES];
+                            fids[0] = e0.fid;
+                            hex_ids[0] = e0.hex_id;
+                            state_ids[0] = e0.state_idx;
                             combos.push(Combo {
                                 n: 1,
                                 fids,
                                 hex_ids,
-                                ss,
+                                state_ids,
                                 start: e0.start,
                                 lat: e0.lat,
                                 lon: e0.lon,
@@ -796,6 +1012,9 @@ pub extern "C" fn run_search() {
                             idx0 = m0.next[idx0 as usize];
                         }
 
+                        if combos.is_empty() {
+                            continue;
+                        }
                         for &p_next in &ix[1..] {
                             let mp = &arena.maps[p_next];
                             let mut min_st = f64::INFINITY;
@@ -820,7 +1039,7 @@ pub extern "C" fn run_search() {
                                         let ce = &mp.entries[c_idx as usize];
                                         let cst = ce.start;
                                         if cst > st_lo && cst < st_hi {
-                                            let ck = ((ce.s.hex_id as u64) << 32) | (((cst * 0.2).round() as i32 as u32) as u64);
+                                            let ck = ((ce.hex_id as u64) << 32) | (((cst * 0.2).round() as i32 as u32) as u64);
                                             if !cand_seen.contains(&ck) {
                                                 cand_seen.push(ck);
                                                 cand_idx.push(c_idx);
@@ -841,7 +1060,7 @@ pub extern "C" fn run_search() {
                                 for &ci in &cand_idx {
                                     let o = &mp.entries[ci as usize];
                                     if (o.start - c.start).abs() < 12.0 {
-                                        let o_hex = o.s.hex_id;
+                                        let o_hex = o.hex_id;
                                         let mut dup = false;
                                         for k_i in 0..c.n {
                                             if c.hex_ids[k_i] == o_hex {
@@ -864,9 +1083,9 @@ pub extern "C" fn run_search() {
                                         seen_hex[seen_len] = o_hex;
                                         seen_len += 1;
                                         let mut nc = c.clone();
-                                        nc.fids[nc.n] = o.s.fid;
+                                        nc.fids[nc.n] = o.fid;
                                         nc.hex_ids[nc.n] = o_hex;
-                                        nc.ss[nc.n] = o.s;
+                                        nc.state_ids[nc.n] = o.state_idx;
                                         nc.n += 1;
                                         nc.start = 0.5 * (c.start + o.start);
                                         nc.lat = 0.5 * (c.lat + o.lat);
@@ -926,7 +1145,7 @@ pub extern "C" fn run_search() {
 
         for h in hits.iter_mut() {
             let mut best_pre = f64::INFINITY;
-            let s0 = &h.ss[0];
+            let s0 = &arena.states[h.state_ids[0] as usize];
             let ve0 = s0.ve;
             let vn0 = s0.vn;
             let hs = (ve0 * ve0 + vn0 * vn0).sqrt();
@@ -941,7 +1160,7 @@ pub extern "C" fn run_search() {
                     let mut sum = 0.0;
                     let bound = best_pre * (n_p as f64);
                     for p in 0..n_p {
-                        let q = lin_score(qps[p], &h.ss[p], lat, lon, st);
+                        let q = lin_score(qps[p], &arena.states[h.state_ids[p] as usize], lat, lon, st);
                         sum += q;
                         if sum >= bound {
                             break;
