@@ -131,10 +131,10 @@ export function wav(x) {
   const dataBytes = x.length * 2;
   const buf = new ArrayBuffer(WavHeader.size + dataBytes);
   const hdr = WavHeader.view(buf, 0);
-  hdr.riff_magic = 0x46464952; // 'RIFF'
+  hdr.riff_magic = 'RIFF';
   hdr.file_size = 36 + dataBytes;
-  hdr.wave_magic = 0x45564157; // 'WAVE'
-  hdr.fmt_magic = 0x20746d66; // 'fmt '
+  hdr.wave_magic = 'WAVE';
+  hdr.fmt_magic = 'fmt ';
   hdr.fmt_size = 16;
   hdr.audio_format = 1;
   hdr.num_channels = 1;
@@ -142,7 +142,7 @@ export function wav(x) {
   hdr.byte_rate = FS * 2;
   hdr.block_align = 2;
   hdr.bits_per_sample = 16;
-  hdr.data_magic = 0x61746164; // 'data'
+  hdr.data_magic = 'data';
   hdr.data_size = dataBytes;
   const pcm = new Int16Array(buf, WavHeader.size, x.length);
   for (let i = 0; i < x.length; i++) {

@@ -4,8 +4,12 @@ import {
   f32,
   f64,
   fixedArray,
+  fixedStr,
   i16,
   i32,
+  scaled,
+  sentinel,
+  slice,
   str,
   u16,
   u32,
@@ -95,52 +99,55 @@ export const IOHeader = defineStruct('IOHeader', {
   out_shortlist_ptr: u32,
 });
 
-// Binary track table schemas streamed over capnweb between LiveTrackerDO and LiveFeed.
+// Binary track table schemas streamed over capnweb between LiveTrackerDO, offline tiles, and LiveFeed.
 export const LiveTrackHeader = defineStruct('LiveTrackHeader', {
   pt_off: u32,
   pt_cnt: u32,
-  hex: str,
-  type: str,
-  reg: str,
-  flight: str,
+  hex: fixedStr(8),
+  type: fixedStr(8),
+  reg: fixedStr(12),
+  flight: fixedStr(12),
 });
 
 export const LiveTrackPoint = defineStruct('LiveTrackPoint', {
   t_ds: u32,
-  lat_e5: i32,
-  lon_e5: i32,
+  lat: scaled(i32, 1e5),
+  lon: scaled(i32, 1e5),
   alt: i16,
-  gs_d: i16,
-  track_d: i16,
-  rate: i16,
-});
-export const TrackBundleHeader = defineStruct('TrackBundleHeader', {
-  base_sec: f64,
-  hdr_bytes: u32,
-  pt_cnt: u32,
+  gs: scaled(i16, 10, { null: NULL_I16 }),
+  track: scaled(i16, 10, { null: NULL_I16 }),
+  rate: sentinel(i16, NULL_I16),
 });
 
-export function packTrackBundle(hdrBytes, ptBytes, ptCnt, baseSec) {
-  const hdrAligned = (hdrBytes.byteLength + 7) & ~7;
-  const out = new Uint8Array(16 + hdrAligned + ptBytes.byteLength);
-  const bHdr = TrackBundleHeader.view(out, 0);
-  bHdr.base_sec = baseSec;
-  bHdr.hdr_bytes = hdrBytes.byteLength;
-  bHdr.pt_cnt = ptCnt;
-  out.set(hdrBytes, 16);
-  out.set(ptBytes, 16 + hdrAligned);
-  return out;
+export const TrackBundle = defineStruct('TrackBundle', {
+  base_sec: f64,
+  headers: slice(LiveTrackHeader),
+  points: slice(LiveTrackPoint),
+});
+
+export function packTrackBundle(headers, points, baseSec) {
+  return TrackBundle.pack([
+    {
+      base_sec: baseSec,
+      headers,
+      points,
+    },
+  ]);
 }
 
 export function unpackTrackBundle(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  if (bytes.byteLength < 16) return { baseSec: 0, hdrs: [], pts: LiveTrackPoint.alloc(0), ptCnt: 0 };
-  const bHdr = TrackBundleHeader.view(bytes, 0);
-  const hdrAligned = (bHdr.hdr_bytes + 7) & ~7;
-  const hdrs = bHdr.hdr_bytes > 0 ? LiveTrackHeader.array(bytes.subarray(16, 16 + bHdr.hdr_bytes)) : [];
-  const ptsByteEnd = 16 + hdrAligned + bHdr.pt_cnt * LiveTrackPoint.size;
-  const pts = LiveTrackPoint.array(bytes.subarray(16 + hdrAligned, ptsByteEnd));
-  return { baseSec: bHdr.base_sec, hdrs, pts, ptCnt: bHdr.pt_cnt };
+  if (bytes.byteLength < TrackBundle.size) {
+    return { baseSec: 0, hdrs: LiveTrackHeader.alloc(0), pts: LiveTrackPoint.alloc(0), ptCnt: 0 };
+  }
+  const arr = TrackBundle.array(bytes);
+  if (!arr.length) {
+    return { baseSec: 0, hdrs: LiveTrackHeader.alloc(0), pts: LiveTrackPoint.alloc(0), ptCnt: 0 };
+  }
+  const b = arr.at(0);
+  const hdrs = b.headers;
+  const pts = b.points;
+  return { baseSec: b.base_sec, hdrs, pts, ptCnt: pts.length };
 }
 
 // Zero-copy audio spectrogram + Doppler pass detection schemas across Web Worker MessagePort.
@@ -166,17 +173,17 @@ export const DetectedPass = defineStruct('DetectedPass', {
   curve_cnt: u32,
 });
 
-export const SpectrogramHeader = defineStruct('SpectrogramHeader', {
+export const SpectrogramBundle = defineStruct('SpectrogramBundle', {
   F: u32,
   B: u32,
   b0: u32,
-  pass_cnt: u32,
-  pts_cnt: u32,
-  curve_cnt: u32,
+  _pad: u32,
   df: f64,
   dt: f64,
   t0: f64,
   dur: f64,
+  passes: slice(DetectedPass),
+  tf_points: slice(TimeFreqPoint),
 });
 
 export function packAnalysis(res) {
@@ -187,115 +194,113 @@ export function packAnalysis(res) {
     totalPts += e.pts?.length ?? 0;
     totalCurve += e.curve?.length ?? 0;
   }
-  const hdrSize = SpectrogramHeader.size;
-  const passesByteLen = evs.length * DetectedPass.size;
-  const tfByteLen = (totalPts + totalCurve) * TimeFreqPoint.size;
-  const meta = new Uint8Array(hdrSize + passesByteLen + tfByteLen);
-
-  const sHdr = SpectrogramHeader.view(meta, 0);
-  sHdr.F = res.F;
-  sHdr.B = res.B;
-  sHdr.b0 = res.b0;
-  sHdr.pass_cnt = evs.length;
-  sHdr.pts_cnt = totalPts;
-  sHdr.curve_cnt = totalCurve;
-  sHdr.df = res.df;
-  sHdr.dt = res.dt;
-  sHdr.t0 = res.t0;
-  sHdr.dur = res.dur;
-  const passesView = DetectedPass.array(meta.subarray(hdrSize, hdrSize + passesByteLen));
-  const tfView = TimeFreqPoint.array(meta.subarray(hdrSize + passesByteLen));
+  const passesView = DetectedPass.alloc(evs.length);
+  const tfView = TimeFreqPoint.alloc(totalPts + totalCurve);
+  const pCur = passesView.cursor();
+  const tfCur = tfView.cursor();
   let ptCursor = 0;
   let curveCursor = totalPts;
 
   for (let i = 0; i < evs.length; i++) {
     const e = evs[i];
-    const p = passesView.cursor(i);
-    p.v = e.v;
-    p.d = e.d;
-    p.f0 = e.f0;
-    p.t0 = e.t0;
-    p.t1 = e.t1;
-    p.tc = e.tc;
-    p.fit_rms = e.fitRms;
-    p.fit_rms_rel = e.fitRmsRel;
-    p.seg0 = e.seg?.[0] ?? 0;
-    p.seg1 = e.seg?.[1] ?? 0;
+    pCur.at(i);
+    pCur.v = e.v;
+    pCur.d = e.d;
+    pCur.f0 = e.f0;
+    pCur.t0 = e.t0;
+    pCur.t1 = e.t1;
+    pCur.tc = e.tc;
+    pCur.fit_rms = e.fitRms;
+    pCur.fit_rms_rel = e.fitRmsRel;
+    pCur.seg0 = e.seg?.[0] ?? 0;
+    pCur.seg1 = e.seg?.[1] ?? 0;
     const pts = e.pts ?? [];
-    p.pts_off = ptCursor;
-    p.pts_cnt = pts.length;
+    pCur.pts_off = ptCursor;
+    pCur.pts_cnt = pts.length;
     for (let j = 0; j < pts.length; j++) {
-      const tf = tfView.cursor(ptCursor++);
-      tf.t = pts[j][0];
-      tf.f = pts[j][1];
+      tfCur.at(ptCursor++);
+      tfCur.t = pts[j][0];
+      tfCur.f = pts[j][1];
     }
     const curve = e.curve ?? [];
-    p.curve_off = curveCursor;
-    p.curve_cnt = curve.length;
+    pCur.curve_off = curveCursor;
+    pCur.curve_cnt = curve.length;
     for (let j = 0; j < curve.length; j++) {
-      const tf = tfView.cursor(curveCursor++);
-      tf.t = curve[j][0];
-      tf.f = curve[j][1];
+      tfCur.at(curveCursor++);
+      tfCur.t = curve[j][0];
+      tfCur.f = curve[j][1];
     }
   }
+  const meta = SpectrogramBundle.pack([
+    {
+      F: res.F,
+      B: res.B,
+      b0: res.b0,
+      df: res.df,
+      dt: res.dt,
+      t0: res.t0,
+      dur: res.dur,
+      passes: passesView,
+      tf_points: tfView,
+    },
+  ]);
   const img = new Uint8Array(res.img.buffer, res.img.byteOffset, res.img.byteLength);
   return { meta, img };
 }
 
 export function unpackAnalysis({ meta, img }) {
-  const bytes = meta instanceof Uint8Array ? meta : new Uint8Array(meta);
-  const sHdr = SpectrogramHeader.view(bytes, 0);
-  const hdrSize = SpectrogramHeader.size;
-  const passesByteLen = sHdr.pass_cnt * DetectedPass.size;
-  const passesView = DetectedPass.array(bytes.subarray(hdrSize, hdrSize + passesByteLen));
-  const tfView = TimeFreqPoint.array(bytes.subarray(hdrSize + passesByteLen));
+  const s = SpectrogramBundle.array(meta).at(0);
+  const passesView = s.passes;
+  const tfView = s.tf_points;
+  const pCur = passesView.cursor();
+  const tfCur = tfView.cursor();
   const events = [];
-  for (let i = 0; i < sHdr.pass_cnt; i++) {
-    const p = passesView.cursor(i);
-    const pts = new Array(p.pts_cnt);
-    for (let j = 0; j < p.pts_cnt; j++) {
-      const tf = tfView.cursor(p.pts_off + j);
-      pts[j] = [tf.t, tf.f];
+  for (let i = 0; i < passesView.length; i++) {
+    pCur.at(i);
+    const pts = new Array(pCur.pts_cnt);
+    for (let j = 0; j < pCur.pts_cnt; j++) {
+      tfCur.at(pCur.pts_off + j);
+      pts[j] = [tfCur.t, tfCur.f];
     }
-    const curve = new Array(p.curve_cnt);
-    for (let j = 0; j < p.curve_cnt; j++) {
-      const tf = tfView.cursor(p.curve_off + j);
-      curve[j] = [tf.t, tf.f];
+    const curve = new Array(pCur.curve_cnt);
+    for (let j = 0; j < pCur.curve_cnt; j++) {
+      tfCur.at(pCur.curve_off + j);
+      curve[j] = [tfCur.t, tfCur.f];
     }
     events.push({
-      v: p.v,
-      d: p.d,
-      f0: p.f0,
-      t0: p.t0,
-      t1: p.t1,
-      tc: p.tc,
-      fitRms: p.fit_rms,
-      fitRmsRel: p.fit_rms_rel,
-      seg: [p.seg0, p.seg1],
+      v: pCur.v,
+      d: pCur.d,
+      f0: pCur.f0,
+      t0: pCur.t0,
+      t1: pCur.t1,
+      tc: pCur.tc,
+      fitRms: pCur.fit_rms,
+      fitRmsRel: pCur.fit_rms_rel,
+      seg: [pCur.seg0, pCur.seg1],
       pts,
       curve,
     });
   }
   const imgClamped = new Uint8ClampedArray(img.buffer, img.byteOffset, img.byteLength);
   return {
-    F: sHdr.F,
-    B: sHdr.B,
-    b0: sHdr.b0,
-    df: sHdr.df,
-    dt: sHdr.dt,
-    t0: sHdr.t0,
-    dur: sHdr.dur,
+    F: s.F,
+    B: s.B,
+    b0: s.b0,
+    df: s.df,
+    dt: s.dt,
+    t0: s.t0,
+    dur: s.dur,
     events,
     img: imgClamped,
   };
 }
 
-// 44-byte RIFF WAVE PCM 16-bit mono header (#[repr(C)] zero-padding layout).
+// 44-byte RIFF WAVE PCM 16-bit mono header (#[repr(C)] zero-padding layout with inline fixedStr(4) magic tags).
 export const WavHeader = defineStruct('WavHeader', {
-  riff_magic: u32,
+  riff_magic: fixedStr(4),
   file_size: u32,
-  wave_magic: u32,
-  fmt_magic: u32,
+  wave_magic: fixedStr(4),
+  fmt_magic: fixedStr(4),
   fmt_size: u32,
   audio_format: u16,
   num_channels: u16,
@@ -303,10 +308,9 @@ export const WavHeader = defineStruct('WavHeader', {
   byte_rate: u32,
   block_align: u16,
   bits_per_sample: u16,
-  data_magic: u32,
+  data_magic: fixedStr(4),
   data_size: u32,
 });
-
 export const WASM_KERNEL_SCHEMAS = [
   SpdSample,
   ShardDesc,

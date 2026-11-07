@@ -1,7 +1,7 @@
 import { buildTrack } from './physics.js';
 import { FT, KT, frameAt } from './geo.js';
 import { newHttpBatchRpcSession } from './vendor/capnweb.js';
-import { LiveTrackHeader, LiveTrackPoint, NULL_I16, SpdSample, unpackTrackBundle } from './schemas.js';
+import { LiveTrackHeader, LiveTrackPoint, SpdSample, unpackTrackBundle } from './schemas.js';
 // Tracks are { meta: { hex, type, reg }, rows: [[tEpoch, lat, lon, altM, gsMps, trkDeg, vrMps]] }.
 
 // Inverse of the columnar line format written by scripts/build-index.mjs.
@@ -138,29 +138,27 @@ export async function loadHistory(lat, lon, rKm, t0, t1, base = '') {
             }
           } else {
             const { baseSec, hdrs, pts } = unpackTrackBundle(raw);
+            const minTds = Math.max(0, Math.floor((t0 - 120 - baseSec) * 10));
+            const maxTds = Math.max(0, Math.ceil((t1 + 120 - baseSec) * 10));
             for (const h of hdrs) {
               const hex = h.hex;
               if (!hex || !h.pt_cnt) continue;
+              const windowPts = pts.subarray(h.pt_off, h.pt_off + h.pt_cnt).rangeBy('t_ds', minTds, maxTds);
+              if (!windowPts.length) continue;
               const rows = [];
-              const end = h.pt_off + h.pt_cnt;
-              for (let j = h.pt_off; j < end; j++) {
-                const pt = pts.cursor(j);
-                const t = baseSec + pt.t_ds / 10;
-                if (t < t0 - 120 || t > t1 + 120) continue;
-                const gs_d = pt.gs_d,
-                  track_d = pt.track_d,
+              for (const pt of windowPts) {
+                const gs = pt.gs,
                   rate = pt.rate;
                 rows.push([
-                  t,
-                  pt.lat_e5 / 1e5,
-                  pt.lon_e5 / 1e5,
+                  baseSec + pt.t_ds / 10,
+                  pt.lat,
+                  pt.lon,
                   pt.alt * FT,
-                  gs_d === NULL_I16 ? null : (gs_d / 10) * KT,
-                  track_d === NULL_I16 ? null : track_d / 10,
-                  rate === NULL_I16 ? null : (rate * FT) / 60,
+                  gs === null ? null : gs * KT,
+                  pt.track,
+                  rate === null ? null : (rate * FT) / 60,
                 ]);
               }
-              if (!rows.length) continue;
               const e = byHex.get(hex);
               if (e) e.rows.push(...rows);
               else byHex.set(hex, { meta: { hex, type: h.type || null, reg: h.reg || null, flight: h.flight || null }, rows });
@@ -280,6 +278,7 @@ export class LiveFeed {
           : null;
     if (bin) {
       const { baseSec, hdrs, pts } = bin;
+      const ptCur = pts.cursor();
       for (const h of hdrs) {
         const hex = h.hex;
         if (!hex || !h.pt_cnt) continue;
@@ -294,7 +293,7 @@ export class LiveFeed {
         }
         const end = h.pt_off + h.pt_cnt;
         for (let j = h.pt_off; j < end; j++) {
-          const ptCur = pts.cursor(j);
+          ptCur.at(j);
           const t = baseSec + ptCur.t_ds / 10;
           const last = e.rows[e.rows.length - 1];
           if (last) {
@@ -304,17 +303,16 @@ export class LiveFeed {
               e._unsorted = true;
             }
           }
-          const gs_d = ptCur.gs_d,
-            track_d = ptCur.track_d,
+          const gs = ptCur.gs,
             rate = ptCur.rate;
           e.rows.push([
             t,
-            ptCur.lat_e5 / 1e5,
-            ptCur.lon_e5 / 1e5,
+            ptCur.lat,
+            ptCur.lon,
             ptCur.alt * FT,
-            gs_d === NULL_I16 ? null : (gs_d / 10) * KT,
-            track_d === NULL_I16 ? null : track_d / 10,
-            rate === NULL_I16 ? null : (rate * FT) / 60,
+            gs === null ? null : gs * KT,
+            ptCur.track,
+            rate === null ? null : (rate * FT) / 60,
           ]);
           e._dirty = true;
         }

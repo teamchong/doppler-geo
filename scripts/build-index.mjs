@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { buildTrack } from '../public/lib/physics.js';
 import { frameAt } from '../public/lib/geo.js';
-import { LiveTrackHeader, LiveTrackPoint, NULL_I16, SpdSample, packTrackBundle } from '../public/lib/schemas.js';
+import { LiveTrackHeader, LiveTrackPoint, SpdSample, packTrackBundle } from '../public/lib/schemas.js';
 
 const FT = 0.3048,
   KT = 0.514444,
@@ -89,35 +89,43 @@ function speedSamples(d, rows, day0, flights, spend, nspd) {
 }
 
 function packTileBundle(items, day0) {
-  let totalPts = 0;
-  for (const tr of items) totalPts += tr.p.length;
-  const ptsView = LiveTrackPoint.alloc(totalPts);
-  const hdrInput = [];
-  let ptIdx = 0;
+  let totalPts = 0,
+    validTracks = 0;
   for (const tr of items) {
-    const pts = tr.p;
-    if (!pts.length) continue;
-    hdrInput.push({
-      pt_off: ptIdx,
-      pt_cnt: pts.length,
-      hex: tr.h || '',
-      type: tr.t || '',
-      reg: tr.r || '',
-      flight: '',
-    });
-    for (let j = 0; j < pts.length; j++) {
-      const p = pts[j];
-      const cur = ptsView.cursor(ptIdx++);
-      cur.t_ds = Math.max(0, Math.round((p[0] - day0) * 10));
-      cur.lat_e5 = Math.round(p[1] * 1e5);
-      cur.lon_e5 = Math.round(p[2] * 1e5);
-      cur.alt = Math.max(-32768, Math.min(32767, Math.round(p[3])));
-      cur.gs_d = p[4] == null ? NULL_I16 : Math.round(p[4] * 10);
-      cur.track_d = p[5] == null ? NULL_I16 : Math.round(p[5] * 10);
-      cur.rate = p[6] == null ? NULL_I16 : Math.max(-32768, Math.min(32767, Math.round(p[6])));
+    if (tr.p?.length) {
+      validTracks++;
+      totalPts += tr.p.length;
     }
   }
-  return packTrackBundle(LiveTrackHeader.pack(hdrInput), ptsView.bytes, totalPts, day0);
+  const hdrsView = LiveTrackHeader.alloc(validTracks);
+  const ptsView = LiveTrackPoint.alloc(totalPts);
+  const hCur = hdrsView.cursor();
+  const ptCur = ptsView.cursor();
+  let hIdx = 0,
+    ptIdx = 0;
+  for (const tr of items) {
+    const pts = tr.p;
+    if (!pts?.length) continue;
+    hCur.at(hIdx++);
+    hCur.pt_off = ptIdx;
+    hCur.pt_cnt = pts.length;
+    hCur.hex = tr.h || '';
+    hCur.type = tr.t || '';
+    hCur.reg = tr.r || '';
+    hCur.flight = '';
+    for (let j = 0; j < pts.length; j++) {
+      const p = pts[j];
+      ptCur.at(ptIdx++);
+      ptCur.t_ds = Math.max(0, Math.round((p[0] - day0) * 10));
+      ptCur.lat = p[1];
+      ptCur.lon = p[2];
+      ptCur.alt = Math.max(-32768, Math.min(32767, Math.round(p[3])));
+      ptCur.gs = p[4];
+      ptCur.track = p[5];
+      ptCur.rate = p[6] == null ? null : Math.max(-32768, Math.min(32767, Math.round(p[6])));
+    }
+  }
+  return packTrackBundle(hdrsView, ptsView, day0);
 }
 
 export async function* tarTraces(input) {
